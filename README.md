@@ -24,7 +24,7 @@
 
 ## 安装
 
-**桌面版（DeepSeek Harness App）**：插件页 → 安装第三方插件 → 把仓库地址 `https://github.com/wungjyan/dsh-offwork-countdown` 填进去。桌面版的 profile 由 App 独占管理，命令行装不进去，只能走这条。
+**桌面版（DeepSeek Harness App）**：插件页 → 添加插件 → 安装第三方插件（支持 npm 包、Git 仓库和本地目录）→ 填仓库地址 `https://github.com/wungjyan/dsh-offwork-countdown`。桌面版的 profile 由 App 独占管理，命令行装不进去，只能走这条。
 
 **命令行**：`--profile` 是必填的，换成你自己的 profile 名（常见是 `web`）。
 
