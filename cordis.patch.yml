@@ -1,0 +1,5 @@
+# Inserts this plugin's Host row into the profile's layer stack. The row owns
+# the settings routes; the Client half renders the pill in `shell.overlay`.
+- insert:
+    - id: dsh-offwork-countdown
+      name: 'dsh-offwork-countdown'

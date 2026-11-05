@@ -1,0 +1,1753 @@
+/**
+ * dsh-offwork-countdown — Client half.
+ *
+ * One pill in the frame-wide overlay layer that walks a workday through its
+ * shift, plus the settings panel it opens. It registers into `shell.overlay`,
+ * the layer the app frame declares for exactly this: a frame-wide surface of its
+ * own, above every column and outside their scroll containers. The layer is
+ * click-through and each occupant opts back in, so the pill never blocks the app
+ * underneath.
+ *
+ * The phases a shift walks through:
+ *
+ *   waiting  — the shift has started but today's clock-in has not been marked.
+ *              The pill shows the start time and a 「已打卡」 button, which is
+ *              itself the reminder to clock in.
+ *   working  — clocked in, before the heads-up window; quiet, theme-token colours
+ *   soon     — inside the heads-up window (default 15 min); warn accent
+ *   due      — the shift has ended; the accent colour fills the card and the pill
+ *              breathes. Shown whether or not the day was clocked in: forgetting
+ *              to clock in must not cost the user the reminder that matters most.
+ *   hidden   — off, a rest day, dismissed for this shift, or outside the reminder
+ *              window after a shift ended.
+ *
+ * ## The shift model (this is what makes night shifts work)
+ *
+ * A shift is an interval [start, end] anchored to a date, and it belongs to the
+ * day it STARTS. When `startTime >= endTime` the interval crosses midnight, so
+ * it ends on the following calendar day. Nothing else differs: the phase maths
+ * runs over the same interval either way.
+ *
+ * That identity — the shift's start date — is also what the per-day marks store
+ * (`clockedInOn`, `dismissedOn`). A night shift beginning 22:00 Monday keeps the
+ * key `2026-11-02` even while it runs at 01:00 Tuesday, so marks never leak
+ * between shifts.
+ *
+ * ## The reminder window
+ *
+ * Once a shift ends, the `due` phase does NOT stay forever: it lasts at most
+ * `remindWindowMinutes` (default 240). Without that bound a night shift ending
+ * 06:00 would still report "time to clock out" at 21:00 that evening, right
+ * before the next shift. The window also stops the pill from nagging at midnight
+ * after an 18:00 finish.
+ *
+ * Motion is suppressed under the operating system's reduced-motion preference,
+ * where the colour and the text still carry the meaning.
+ *
+ * Settings live in the Host half (see host.js) rather than `localStorage`: the
+ * Web GUI is served from a port that changes between launches, and a tab's
+ * storage is keyed by origin.
+ */
+window.__ModuleLoader__.load({
+  id: 'dsh-offwork-countdown',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+    const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
+
+    const NS = 'dsh-offwork-countdown'
+    const STATE_PATH = '/dsh-offwork-countdown/state'
+
+    /** The npm package name this bundle installs as; the detail page keys on it. */
+    const PACKAGE_NAME = 'dsh-offwork-countdown'
+
+    /** Copy for both locales. The Host never reads these; they are the page's. */
+    const DICT = {
+      zh: {
+        'pill.waiting': '上班打卡 · {start}',
+        'pill.endAt': '{time} 下班',
+        'pill.soon': '快下班了 · {time}',
+        'pill.remaining': '还有 {delta}',
+        'delta.hm': '{h} 小时 {m} 分',
+        'delta.ms': '{m} 分 {s} 秒',
+        'delta.s': '{s} 秒',
+        'pill.due': '下班时间到了，记得打卡',
+        'act.clockIn': '已打卡',
+        'act.clockedIn': '已打卡 ✓',
+        'act.known': '知道了',
+        'panel.title': '打卡提醒',
+        'panel.subtitle': '到点后浮窗会变色并轻轻呼吸，提醒你打卡。',
+        'panel.sectionTime': '班次时间',
+        'panel.startTime': '上班时间',
+        'panel.endTime': '下班时间',
+        'panel.overnight': '夜班（跨零点）',
+        'panel.sectionWarn': '提醒节奏',
+        'panel.lead': '提前提醒',
+        'panel.leadValue': '提前 {n} 分钟',
+        'panel.leadNone': '到点才提醒',
+        'panel.pulseLabel': '呼吸节奏',
+        'panel.pulseFast': '快（1.2 秒）',
+        'panel.pulseNormal': '中（1.8 秒）',
+        'panel.pulseSlow': '慢（3 秒）',
+        'panel.windowLabel': '提醒有效期',
+        'panel.windowValue': '{n} 小时',
+        'panel.windowHint': '下班后最多提醒这么久，超时自动安静。',
+        'panel.workdays': '提醒日',
+        'panel.sectionLook': '外观',
+        'panel.accent': '提醒颜色',
+        'panel.custom': '自定义',
+        'panel.position': '挂件位置',
+        'panel.dragHint': '也可以直接把浮窗拖到任意位置。',
+        'panel.resetSpot': '恢复角落',
+        'panel.enabled': '显示浮窗',
+        'panel.close': '关闭',
+        'panel.loading': '正在读取设置…',
+        'panel.failed': '保存失败：{message}',
+        'panel.loadFailed': '读取设置失败，先按默认值显示。',
+        'panel.retry': '重试',
+        'panel.hint': '设置保存在本机，重启后仍然有效。',
+        'panel.daysRequired': '至少保留一天。',
+        'panel.shiftInvalid': '上班和下班时间不能相同。',
+        'panel.clockInHint': '每天点一次「已打卡」，浮窗才开始显示下班倒计时。',
+        'day.1': '一',
+        'day.2': '二',
+        'day.3': '三',
+        'day.4': '四',
+        'day.5': '五',
+        'day.6': '六',
+        'day.7': '日',
+        'pos.bottom-right': '右下角',
+        'pos.bottom-left': '左下角',
+        'pos.top-right': '右上角',
+        'pos.top-left': '左上角',
+        'open': '打开打卡设置',
+        'color.red': '红',
+        'color.orange': '橙',
+        'color.amber': '琥珀',
+        'color.rose': '玫红',
+        'color.violet': '紫',
+        'color.blue': '蓝',
+        'color.cyan': '青',
+        'color.green': '绿',
+        'color.slate': '深灰',
+      },
+      en: {
+        'pill.waiting': 'Clock in · {start}',
+        'pill.endAt': 'Off at {time}',
+        'pill.soon': 'Off soon · {time}',
+        'pill.remaining': '{delta} left',
+        'delta.hm': '{h}h {m}m',
+        'delta.ms': '{m}m {s}s',
+        'delta.s': '{s}s',
+        'pill.due': 'Time to clock out',
+        'act.clockIn': 'Clock in',
+        'act.clockedIn': 'Clocked in ✓',
+        'act.known': 'Got it',
+        'panel.title': 'Clock reminder',
+        'panel.subtitle': 'When the time comes the pill fills with colour and breathes, so you do not forget to clock out.',
+        'panel.sectionTime': 'Shift',
+        'panel.startTime': 'Starts',
+        'panel.endTime': 'Ends',
+        'panel.overnight': 'Night shift (crosses midnight)',
+        'panel.sectionWarn': 'Reminders',
+        'panel.lead': 'Heads-up',
+        'panel.leadValue': '{n} min before',
+        'panel.leadNone': 'At the time only',
+        'panel.pulseLabel': 'Breathing pace',
+        'panel.pulseFast': 'Fast (1.2 s)',
+        'panel.pulseNormal': 'Medium (1.8 s)',
+        'panel.pulseSlow': 'Slow (3 s)',
+        'panel.windowLabel': 'Reminder lasts',
+        'panel.windowValue': '{n} h',
+        'panel.windowHint': 'After the shift ends the pill reminds for at most this long, then goes quiet.',
+        'panel.workdays': 'Remind on',
+        'panel.sectionLook': 'Appearance',
+        'panel.accent': 'Colour',
+        'panel.custom': 'Custom',
+        'panel.position': 'Corner',
+        'panel.dragHint': 'You can also drag the pill anywhere you like.',
+        'panel.resetSpot': 'Reset',
+        'panel.enabled': 'Show the pill',
+        'panel.close': 'Close',
+        'panel.loading': 'Reading settings…',
+        'panel.failed': 'Could not save: {message}',
+        'panel.loadFailed': 'Could not read the settings; showing defaults.',
+        'panel.retry': 'Retry',
+        'panel.hint': 'Stored on this machine, so it survives a restart.',
+        'panel.daysRequired': 'Keep at least one day.',
+        'panel.shiftInvalid': 'Start and end times must differ.',
+        'panel.clockInHint': 'Clock in once a day and the pill starts counting down to the end of your shift.',
+        'day.1': 'M',
+        'day.2': 'T',
+        'day.3': 'W',
+        'day.4': 'T',
+        'day.5': 'F',
+        'day.6': 'S',
+        'day.7': 'S',
+        'pos.bottom-right': 'Bottom right',
+        'pos.bottom-left': 'Bottom left',
+        'pos.top-right': 'Top right',
+        'pos.top-left': 'Top left',
+        'open': 'Open clock settings',
+        'color.red': 'Red',
+        'color.orange': 'Orange',
+        'color.amber': 'Amber',
+        'color.rose': 'Rose',
+        'color.violet': 'Violet',
+        'color.blue': 'Blue',
+        'color.cyan': 'Cyan',
+        'color.green': 'Green',
+        'color.slate': 'Slate',
+      },
+    }
+
+    function interpolate(text, params) {
+      if (params === undefined) return text
+      return text.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
+    }
+
+    /**
+     * The language to read from the local table when the locale service cannot
+     * answer — before it activates, or if the page has none at all.
+     *
+     * The reader's own system language decides, not English by default: a page
+     * that never receives a dictionary still belongs to someone reading Chinese,
+     * and showing them English is indistinguishable from a bug. In the Desktop
+     * build this resolves to the Electron process's system language, because the
+     * GUI runs inside its embedded Chromium.
+     *
+     * Resolved once, at module scope: the value cannot change while the page
+     * lives, and every render would otherwise re-read it.
+     * @returns {'zh' | 'en'} the fallback language.
+     */
+    const TABLE_LANGUAGE = (() => {
+      try {
+        const tags = typeof navigator === 'undefined' ? [] : [...(navigator.languages ?? []), navigator.language ?? '']
+        for (const tag of tags) {
+          if (typeof tag === 'string' && tag.toLowerCase().split('-')[0] === 'zh') return 'zh'
+        }
+      } catch {
+        // A host without a readable navigator keeps the English table.
+      }
+      return 'en'
+    })()
+
+    /**
+     * Look a string up in the active locale, then in this table. The locale
+     * service can arrive after the factory runs, so `translate` stays null until
+     * `apply` binds it and the table is the fallback.
+     */
+    let translate = null
+    function t(key, params) {
+      if (translate !== null) {
+        try {
+          const value = translate(key, params)
+          if (typeof value === 'string' && value !== '') return value
+        } catch {
+          // A missing key falls through to the local table.
+        }
+      }
+      const fallback = DICT[TABLE_LANGUAGE][key] ?? DICT.en[key] ?? DICT.zh[key]
+      return typeof fallback === 'string' ? interpolate(fallback, params) : key
+    }
+
+    // ---- the accent palette -----------------------------------------------
+    //
+    // Every preset is a pair of hex values: the fill used in the light theme and
+    // the fill used in the dark theme. Two presets differ between the two on
+    // purpose — `amber` is darkened in the light theme and `slate` is lightened
+    // in the dark theme — because a single value cannot clear 3:1 against both a
+    // white and a near-black page. See the measured table in OPTIMIZATION.md.
+    //
+    // `ink` is the text colour chosen for the fill: white or near-black, which
+    // ever reaches the higher contrast. All nine presets clear 4.5:1.
+
+    const ACCENTS = {
+      red: { light: '#dc2626', dark: '#dc2626', ink: 'light', label: 'color.red' },
+      orange: { light: '#ea580c', dark: '#ea580c', ink: 'dark', label: 'color.orange' },
+      amber: { light: '#ce8509', dark: '#f59e0b', ink: 'dark', label: 'color.amber' },
+      rose: { light: '#e11d48', dark: '#e11d48', ink: 'light', label: 'color.rose' },
+      violet: { light: '#7c3aed', dark: '#7c3aed', ink: 'light', label: 'color.violet' },
+      blue: { light: '#2563eb', dark: '#2563eb', ink: 'light', label: 'color.blue' },
+      cyan: { light: '#0891b2', dark: '#0891b2', ink: 'dark', label: 'color.cyan' },
+      green: { light: '#16a34a', dark: '#16a34a', ink: 'dark', label: 'color.green' },
+      slate: { light: '#374151', dark: '#5b6370', ink: 'light', label: 'color.slate' },
+    }
+
+    const ACCENT_ORDER = ['red', 'orange', 'amber', 'rose', 'violet', 'blue', 'cyan', 'green', 'slate']
+
+    /** The text colour for a custom fill: whichever of white/near-black wins. */
+    const CUSTOM_INK_LIGHT = '#ffffff'
+    const CUSTOM_INK_DARK = '#1a1a1a'
+
+    function hexToRgb(hex) {
+      const value = parseInt(hex.slice(1), 16)
+      return [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+    }
+
+    function channelLuminance(channel) {
+      const c = channel / 255
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    }
+
+    function relativeLuminance(hex) {
+      const [r, g, b] = hexToRgb(hex)
+      return 0.2126 * channelLuminance(r) + 0.7152 * channelLuminance(g) + 0.0722 * channelLuminance(b)
+    }
+
+    function contrastRatio(a, b) {
+      const [high, low] = [relativeLuminance(a), relativeLuminance(b)].sort((left, right) => right - left)
+      return (high + 0.05) / (low + 0.05)
+    }
+
+    /**
+     * Resolve one accent setting into the concrete colours a render needs.
+     *
+     * A preset answers with its two theme fills. A custom `#rrggbb` answers with
+     * the same fill in both themes plus the better text colour, and — when
+     * neither white nor near-black clears 4.5:1, the maths that makes pure mid
+     * greys unusable — a warning so the panel can steer the user back.
+     * @param {string} accent - a preset name or a `#rrggbb` string.
+     * @param {boolean} dark - whether the active theme is dark.
+     * @returns {{fill: string, ink: string, weak: boolean}} resolved colours.
+     */
+    function resolveAccent(accent, dark) {
+      const preset = ACCENTS[accent]
+      if (preset !== undefined) {
+        return {
+          fill: dark ? preset.dark : preset.light,
+          ink: preset.ink === 'light' ? CUSTOM_INK_LIGHT : CUSTOM_INK_DARK,
+          weak: false,
+        }
+      }
+      const fill = /^#[0-9a-fA-F]{6}$/.test(accent) ? accent : ACCENTS.red.light
+      const white = contrastRatio(CUSTOM_INK_LIGHT, fill)
+      const black = contrastRatio(CUSTOM_INK_DARK, fill)
+      const useWhite = white >= black
+      return {
+        fill,
+        ink: useWhite ? CUSTOM_INK_LIGHT : CUSTOM_INK_DARK,
+        weak: Math.max(white, black) < 4.5,
+      }
+    }
+
+    // ---- the shift model ----------------------------------------------------
+
+    /** What the page uses until the Host answers, and if it never does. */
+    const DEFAULTS = {
+      startTime: '09:00',
+      endTime: '18:00',
+      leadMinutes: 15,
+      workdays: [1, 2, 3, 4, 5],
+      position: 'bottom-right',
+      spot: null,
+      enabled: true,
+      clockedInOn: null,
+      dismissedOn: null,
+      accentColor: 'red',
+      pulseSeconds: 1.8,
+      remindWindowMinutes: 240,
+    }
+
+    /** The corners the pill may dock to. */
+    const CORNERS = ['bottom-right', 'bottom-left', 'top-right', 'top-left']
+
+    const MINUTE_MS = 60_000
+
+    /**
+     * The local calendar day of one instant, as `YYYY-MM-DD`.
+     *
+     * Built from the local parts rather than `toISOString()`, which reports UTC:
+     * that would hand a reader in UTC+8 the previous day until 08:00, exactly
+     * when a workday reminder has to be right.
+     * @param {Date} date - the instant.
+     * @returns {string} the local date key.
+     */
+    function localDateKey(date) {
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      return `${year}-${month}-${day}`
+    }
+
+    /**
+     * The ISO weekday of one instant: Monday 1 through Sunday 7.
+     * @param {Date} date - the instant.
+     * @returns {number} the ISO weekday.
+     */
+    function isoWeekday(date) {
+      const day = date.getDay()
+      return day === 0 ? 7 : day
+    }
+
+    /**
+     * Turn `HH:MM` into minutes after local midnight.
+     * @param {string} time - a validated `HH:MM` string.
+     * @returns {number} minutes, 0..1439.
+     */
+    function minutesOf(time) {
+      const [hours, minutes] = time.split(':')
+      return Number(hours) * 60 + Number(minutes)
+    }
+
+    /**
+     * Build the shift anchored to one local calendar day.
+     *
+     * `startTime >= endTime` means the shift crosses midnight, so its end lands
+     * on the following day. This is the whole night-shift story: one interval,
+     * one identity (the start day), no separate code path.
+     * @param {Date} day - any instant within the start day (only Y/M/D is used).
+     * @param {string} startTime - `HH:MM`.
+     * @param {string} endTime - `HH:MM`.
+     * @returns {{start: Date, end: Date, key: string}} the shift.
+     */
+    function buildShift(day, startTime, endTime) {
+      const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0, 0)
+      start.setMinutes(minutesOf(startTime))
+      const end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0, 0)
+      end.setMinutes(minutesOf(endTime))
+      if (minutesOf(startTime) >= minutesOf(endTime)) end.setDate(end.getDate() + 1)
+      return { start, end, key: localDateKey(start) }
+    }
+
+    /**
+     * Whether a shift's start day is one of the configured reminder days.
+     * @param {object} shift - the shift.
+     * @param {number[]} workdays - configured ISO weekdays.
+     * @returns {boolean} true when this shift runs.
+     */
+    function isScheduledShift(shift, workdays) {
+      return workdays.includes(isoWeekday(shift.start))
+    }
+
+    /**
+     * The schedule's current phase for one instant.
+     *
+     * Pure, so the ticking pill, the settings panel and the tests read one
+     * implementation. It looks at a few days of shifts so a night shift that
+     * began yesterday is still found while it runs today, and so the `due` phase
+     * can be recognised after its shift has ended.
+     * @param {object} schedule - the settings document.
+     * @param {Date} now - the current instant.
+     * @returns {object} the phase, the shift it belongs to, and label inputs.
+     */
+    function derivePhase(schedule, now) {
+      if (!schedule.enabled) return { phase: 'hidden', shift: null, remaining: 0 }
+
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
+      const shifts = []
+      // Yesterday covers a night shift still running this morning; today covers
+      // the ordinary case; tomorrow is not needed.
+      for (const offset of [-2, -1, 0]) {
+        const day = new Date(today)
+        day.setDate(day.getDate() + offset)
+        const shift = buildShift(day, schedule.startTime, schedule.endTime)
+        if (isScheduledShift(shift, schedule.workdays)) shifts.push(shift)
+      }
+
+      // 1) A shift is running right now.
+      const active = shifts.find((shift) => now >= shift.start && now < shift.end)
+      if (active !== undefined) {
+        if (schedule.dismissedOn === active.key) return { phase: 'hidden', shift: active, remaining: 0 }
+        if (schedule.clockedInOn !== active.key) {
+          return { phase: 'waiting', shift: active, remaining: active.end - now }
+        }
+        const remaining = active.end - now
+        const leadMs = schedule.leadMinutes * MINUTE_MS
+        if (remaining <= leadMs) return { phase: 'soon', shift: active, remaining }
+        return { phase: 'working', shift: active, remaining }
+      }
+
+      // 2) A shift has ended and its reminder window is still open. "Due" never
+      //    depends on the clock-in mark: forgetting to clock in must not cost
+      //    the user the one reminder the plugin exists for.
+      const windowMs = schedule.remindWindowMinutes * MINUTE_MS
+      const ended = shifts
+        .filter((shift) => now >= shift.end && now - shift.end < windowMs)
+        .sort((left, right) => right.end - left.end)[0]
+      if (ended !== undefined) {
+        if (schedule.dismissedOn === ended.key) return { phase: 'hidden', shift: ended, remaining: 0 }
+        return { phase: 'due', shift: ended, remaining: now - ended.end }
+      }
+
+      return { phase: 'hidden', shift: null, remaining: 0 }
+    }
+
+    /**
+     * The pill's compact countdown: `05:42` under an hour, `2:05` above it.
+     * @param {number} milliseconds - remaining time.
+     * @returns {string} the formatted time.
+     */
+    function formatDelta(milliseconds) {
+      const total = Math.max(0, Math.floor(Math.abs(milliseconds) / 1000))
+      const hours = Math.floor(total / 3600)
+      const minutes = Math.floor((total % 3600) / 60)
+      const seconds = total % 60
+      // A bare `M:SS` is ambiguous next to a schedule: `10:00` reads as ten
+      // o'clock as easily as ten minutes, so units say which one it is.
+      //
+      // Precision follows what the reader can act on: hours and minutes most of
+      // the day, then minutes and seconds inside the last hour — where the
+      // seconds are the whole point of a countdown. Showing seconds all day
+      // would only make the text twitch every second for no benefit.
+      if (hours > 0) return t('delta.hm', { h: hours, m: String(minutes).padStart(2, '0') })
+      if (minutes > 0) return t('delta.ms', { m: minutes, s: String(seconds).padStart(2, '0') })
+      return t('delta.s', { s: seconds })
+    }
+
+    /**
+     * The two text lines one phase shows.
+     *
+     * Two lines, not one, because a single line put two clock-shaped numbers side
+     * by side — `18:00 8:12` — and a reader had to work out which was the
+     * schedule and which was the countdown. The top line states a fact ("ends at
+     * 18:00", "nearly done"), the bottom line is the one live number, always
+     * introduced by 「还有」 so it can only mean remaining time.
+     *
+     * `waiting` carries no countdown on purpose: the shift end is not what is
+     * being counted down before the clock-in happens, and a number there read as
+     * if the day had already started.
+     * @param {string} phase - the phase name.
+     * @param {object} schedule - the settings document.
+     * @param {number} remaining - milliseconds until the shift ends.
+     * @returns {{primary: string, secondary: string}} the lines to draw.
+     */
+    function labelsFor(phase, schedule, remaining) {
+      if (phase === 'waiting') {
+        return { primary: t('pill.waiting', { start: schedule.startTime }), secondary: '' }
+      }
+      if (phase === 'working') {
+        return {
+          primary: t('pill.endAt', { time: schedule.endTime }),
+          secondary: t('pill.remaining', { delta: formatDelta(remaining) }),
+        }
+      }
+      if (phase === 'soon') {
+        return {
+          primary: t('pill.soon', { time: schedule.endTime }),
+          secondary: t('pill.remaining', { delta: formatDelta(remaining) }),
+        }
+      }
+      if (phase === 'due') return { primary: t('pill.due'), secondary: '' }
+      return { primary: '', secondary: '' }
+    }
+
+    // ---- talking to the Host half -------------------------------------------
+
+    /**
+     * Read one response's JSON, refusing anything that is not an `ok` payload.
+     * @param {Response} response - the fetched response.
+     * @returns {Promise<object>} the body.
+     * @throws {Error} carrying the Host's own message.
+     */
+    async function readPayload(response) {
+      const body = await response.json().catch(() => null)
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(body?.message ?? `HTTP ${response.status}`)
+      }
+      return body
+    }
+
+    /**
+     * The whole client-side store: one snapshot the pill and the panel share.
+     *
+     * They are separate slot entries, so a save in the panel has to reach the
+     * pill without either reaching into the other's DOM. `useSyncExternalStore`
+     * gives React the subscription, and the snapshot object is replaced only on
+     * a real change so the store cannot spin.
+     */
+    const listeners = new Set()
+    let snapshot = { status: 'loading', state: DEFAULTS, error: null }
+
+    function publish(next) {
+      snapshot = next
+      for (const listener of [...listeners]) listener()
+    }
+
+    function subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    }
+
+    function getSnapshot() {
+      return snapshot
+    }
+
+    /**
+     * Normalize whatever the Host returned into a complete document, so a
+     * render can never read `undefined.workdays.includes`. The Host validates
+     * already; this is the page's guard against a newer or older Host.
+     * @param {object} raw - the Host's document.
+     * @returns {object} a complete document.
+     */
+    function adaptState(raw) {
+      const merged = { ...DEFAULTS, ...(raw ?? {}) }
+      const time = (value, fallback) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback)
+      const startTime = time(merged.startTime, DEFAULTS.startTime)
+      const endTime = time(merged.endTime, DEFAULTS.endTime)
+      return {
+        // A stored pair that has collapsed to a zero-length shift falls back as
+        // a pair, never as one half of the old one.
+        startTime: startTime === endTime ? DEFAULTS.startTime : startTime,
+        endTime: startTime === endTime ? DEFAULTS.endTime : endTime,
+        leadMinutes: Number.isInteger(merged.leadMinutes) ? merged.leadMinutes : DEFAULTS.leadMinutes,
+        workdays:
+          Array.isArray(merged.workdays) && merged.workdays.length > 0
+            ? merged.workdays.filter((day) => Number.isInteger(day) && day >= 1 && day <= 7)
+            : DEFAULTS.workdays,
+        position: CORNERS.includes(merged.position) ? merged.position : DEFAULTS.position,
+        spot: adaptSpot(merged.spot),
+        enabled: merged.enabled !== false,
+        clockedInOn: typeof merged.clockedInOn === 'string' ? merged.clockedInOn : null,
+        dismissedOn: typeof merged.dismissedOn === 'string' ? merged.dismissedOn : null,
+        accentColor:
+          typeof merged.accentColor === 'string' && (ACCENTS[merged.accentColor] !== undefined || /^#[0-9a-fA-F]{6}$/.test(merged.accentColor))
+            ? merged.accentColor
+            : DEFAULTS.accentColor,
+        pulseSeconds: [1.2, 1.8, 3].includes(merged.pulseSeconds) ? merged.pulseSeconds : DEFAULTS.pulseSeconds,
+        remindWindowMinutes:
+          Number.isInteger(merged.remindWindowMinutes) && merged.remindWindowMinutes >= 15
+            ? merged.remindWindowMinutes
+            : DEFAULTS.remindWindowMinutes,
+      }
+    }
+
+    /**
+     * Normalize a stored free-drag position.
+     *
+     * Anything that is not a usable pair of fractions becomes `null`, which means
+     * "use the corner preset" — a half-written or older document then lands in a
+     * known place instead of at an unspecified one.
+     * @param {unknown} value - the stored value.
+     * @returns {{x: number, y: number} | null} the usable spot.
+     */
+    function adaptSpot(value) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+      const { x, y } = value
+      const usable = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1
+      if (!usable(x) || !usable(y)) return null
+      // Exactly (0,0) is never something a drag produces by intent: a pointer
+      // release at the very corner means the gesture was measured against a
+      // wrong origin (the slot wrapper has no layout box). Treat it as "no saved
+      // position" so the pill returns to its configured corner instead of being
+      // stranded in the top-left.
+      if (x === 0 && y === 0) return null
+      return { x, y }
+    }
+
+    /** Read the stored schedule once; a failure leaves the defaults on screen. */
+    function loadOnce() {
+      if (snapshot.status !== 'loading') return
+      fetch(STATE_PATH, { cache: 'no-store' })
+        .then(readPayload)
+        .then((body) => publish({ status: 'ready', state: adaptState(body.state), error: null }))
+        .catch((error) => publish({ status: 'failed', state: snapshot.state, error: messageOf(error) }))
+    }
+
+    /** Try the Host again after a failed read, keeping the current state meanwhile. */
+    function reload() {
+      publish({ status: 'loading', state: snapshot.state, error: null })
+      fetch(STATE_PATH, { cache: 'no-store' })
+        .then(readPayload)
+        .then((body) => publish({ status: 'ready', state: adaptState(body.state), error: null }))
+        .catch((error) => publish({ status: 'failed', state: snapshot.state, error: messageOf(error) }))
+    }
+
+    /**
+     * Apply a patch optimistically, then confirm it with the Host.
+     *
+     * The pill answers the moment a control changes; a refused write rolls the
+     * store back to what was there before, so the panel cannot drift from what
+     * is actually stored.
+     * @param {object} patch - the fields to change.
+     * @returns {Promise<void>} resolution after the Host answers.
+     */
+    async function commit(patch) {
+      const previous = snapshot.state
+      const optimistic = adaptState({ ...previous, ...patch })
+      publish({ status: 'saving', state: optimistic, error: null })
+      try {
+        const response = await fetch(STATE_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch),
+        })
+        const body = await readPayload(response)
+        publish({ status: 'ready', state: adaptState(body.state), error: null })
+      } catch (error) {
+        publish({ status: 'failed', state: previous, error: messageOf(error) })
+        throw error
+      }
+    }
+
+    /**
+     * Read one error's text.
+     * @param {unknown} error - the caught value.
+     * @returns {string} its message.
+     */
+    function messageOf(error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+
+    // ---- geometry -----------------------------------------------------------
+    //
+    // Two ways to place the pill, and the panel follows whichever is in use:
+    //
+    //   corner preset — anchored to one side pair with a fixed 16px inset. Simple,
+    //                   and what a fresh install starts with.
+    //   free spot     — a stored fraction of the pill's TRAVEL RANGE, i.e. of
+    //                   (window - pill). That range is what makes the fraction
+    //                   survive a resize: 1 always means "flush against the edge",
+    //                   so a pill parked bottom-right stays bottom-right when the
+    //                   window shrinks, where a pixel offset would fall outside.
+
+    /**
+     * Corner presets, written as COMPLETE declarations.
+     *
+     * Every axis is stated — the unused one as `auto` — because React does not
+     * clear an inline style property that a later render stops mentioning. Going
+     * from a dragged position (`left`/`top`) back to a corner would otherwise
+     * keep the old `left`/`top` beside the new `right`/`bottom`, and the browser
+     * would honour whichever it resolved first.
+     */
+    const CORNER_STYLE = {
+      'bottom-right': { bottom: 16, right: 16, left: 'auto', top: 'auto' },
+      'bottom-left': { bottom: 16, left: 16, right: 'auto', top: 'auto' },
+      'top-right': { top: 16, right: 16, left: 'auto', bottom: 'auto' },
+      'top-left': { top: 16, left: 16, right: 'auto', bottom: 'auto' },
+    }
+
+    /** The pill's height, so the panel can clear it. */
+    const PILL_HEIGHT = 48
+
+    /** How close two positions must be, in px, before a press counts as a drag. */
+    const DRAG_THRESHOLD = 3
+
+    /**
+     * Turn a stored fraction into a pixel offset inside a frame of `frame` size.
+     *
+     * The fraction maps onto the travel range, then the result is clamped so the
+     * pill stays fully visible even after the window shrank far below the size it
+     * was parked in.
+     * @param {{x: number, y: number}} spot - fractions, 0..1 on each axis.
+     * @param {{width: number, height: number}} frame - the overlay layer's size.
+     * @param {{width: number, height: number}} size - the pill's own size.
+     * @returns {{left: number, top: number}} pixel offset from the frame's origin.
+     */
+    function spotToPixels(spot, frame, size) {
+      const maxX = Math.max(0, frame.width - size.width)
+      const maxY = Math.max(0, frame.height - size.height)
+      const clamp = (value, max) => Math.min(Math.max(value, 0), max)
+      return { left: clamp(spot.x * maxX, maxX), top: clamp(spot.y * maxY, maxY), right: 'auto', bottom: 'auto' }
+    }
+
+    /**
+     * Turn a pixel offset back into the stored fraction.
+     * @param {{left: number, top: number}} pixels - offset from the frame origin.
+     * @param {{width: number, height: number}} frame - the overlay layer's size.
+     * @param {{width: number, height: number}} size - the pill's own size.
+     * @returns {{x: number, y: number}} fractions, 0..1 on each axis.
+     */
+    function pixelsToSpot(pixels, frame, size) {
+      const maxX = Math.max(1, frame.width - size.width)
+      const maxY = Math.max(1, frame.height - size.height)
+      return {
+        x: Math.min(1, Math.max(0, pixels.left / maxX)),
+        y: Math.min(1, Math.max(0, pixels.top / maxY)),
+      }
+    }
+
+    /**
+     * The panel's inline anchor.
+     *
+     * For a corner the panel sits on the same side as the pill, cleared by the
+     * pill's height so opening it never hides what was just clicked. For a free
+     * spot it is placed under (or above, near the bottom edge) the pill's saved
+     * position, kept inside the frame.
+     * @param {object} schedule - the settings document.
+     * @param {{width: number, height: number}} frame - the overlay layer's size.
+     * @param {number} panelHeight - the panel's estimated height in px.
+     * @returns {object} inline offsets for the panel.
+     */
+    function panelAnchorFor(schedule, frame, panelHeight = 420) {
+      if (schedule.spot !== null && frame.width > 0) {
+        const pixels = spotToPixels(schedule.spot, frame, { width: 320, height: PILL_HEIGHT })
+        const below = pixels.top + PILL_HEIGHT + 8
+        // Flip above the pill when there is no room below it.
+        const top = below + panelHeight <= frame.height ? below : Math.max(8, pixels.top - panelHeight - 8)
+        const left = Math.min(Math.max(8, pixels.left), Math.max(8, frame.width - 348))
+        return { top, left }
+      }
+      const base = CORNER_STYLE[schedule.position] ?? CORNER_STYLE['bottom-right']
+      const vertical = base.bottom !== undefined ? { bottom: base.bottom + PILL_HEIGHT + 8 } : { top: base.top + PILL_HEIGHT + 8 }
+      const horizontal = base.right !== undefined ? { right: base.right } : { left: base.left }
+      return { ...vertical, ...horizontal }
+    }
+
+    /**
+     * Measure the overlay layer the pill is rendered into.
+     *
+     * The slot's own container is the frame-wide layer, so its box is the space
+     * the pill may occupy. Falls back to the window when the parent cannot be
+     * measured (a detached render in a test, for instance).
+     * @param {HTMLElement | null} element - the pill element.
+     * @returns {{width: number, height: number}} the frame size.
+     */
+    function measureFrame(element) {
+      if (element === null || element === undefined) return { width: 0, height: 0, left: 0, top: 0 }
+      // The slot machinery wraps every entry in a `display:contents` anchor, which
+      // has NO layout box: `getBoundingClientRect()` on it is all zeros. Walking up
+      // to the offsetParent finds the layer that actually positions the pill
+      // (the frame-wide overlay), and its origin is what event coordinates are
+      // relative to. Falling back to the viewport here would silently place the
+      // pill relative to the wrong box.
+      const anchor = element.offsetParent ?? element.parentElement
+      if (anchor === null || anchor === undefined) return { width: 0, height: 0, left: 0, top: 0 }
+      const rect = anchor.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        return { width: rect.width, height: rect.height, left: rect.left, top: rect.top }
+      }
+      return { width: 0, height: 0, left: 0, top: 0 }
+    }
+
+    // ---- the pill -----------------------------------------------------------
+
+    /**
+     * The floating pill, or the dim dot that stands in for it when the pill has
+     * nothing to say.
+     *
+     * Every clickable part is a real `<button>`: it must be reachable and
+     * operable from the keyboard. The changing text is outside a live region —
+     * otherwise a screen reader would read the countdown once a second. Only the
+     * phase label lives in one, so a phase change is announced once.
+     * @returns {object} the pill element.
+     */
+    function Pill() {
+      const store = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+      const [now, setNow] = useState(() => new Date())
+      const [panelOpen, setPanelOpen] = useState(false)
+      const [shaking, setShaking] = useState(false)
+      const schedule = store.state
+
+      // One tick a second drives both the countdown text and the phase, so no
+      // separate timer has to decide "due". The panel is memoized below so this
+      // re-render never reaches an open form.
+      useEffect(() => {
+        const handle = setInterval(() => setNow(new Date()), 1000)
+        return () => clearInterval(handle)
+      }, [])
+
+      // Read the stored schedule once the Client half is live.
+      useEffect(() => {
+        loadOnce()
+      }, [])
+
+      // The theme decides which fill of a preset is used, so the pill has to
+      // re-render when the user switches light/dark.
+      const theme = useSyncExternalStore(
+        (listener) => ctxThemeSubscribe(listener),
+        () => ctxThemeSnapshot(),
+        () => ctxThemeSnapshot(),
+      )
+      const dark = theme?.dark === true
+
+      const derived = useMemo(() => derivePhase(schedule, now), [schedule, now])
+      const phase = derived.phase
+      const accent = useMemo(() => resolveAccent(schedule.accentColor, dark), [schedule.accentColor, dark])
+      const labels = useMemo(
+        () => labelsFor(phase, schedule, derived.remaining),
+        [phase, schedule, derived.remaining],
+      )
+
+      // The transition into "due" gets one shake burst on top of the steady
+      // breathing: an arrival is what the eye must catch.
+      const previousPhase = useRef(phase)
+      useEffect(() => {
+        if (phase === 'due' && previousPhase.current !== 'due') {
+          setShaking(true)
+          const handle = setTimeout(() => setShaking(false), 900)
+          previousPhase.current = phase
+          return () => clearTimeout(handle)
+        }
+        previousPhase.current = phase
+        return undefined
+      }, [phase])
+
+      // ---- position: corner preset or free drag ----------------------------
+      //
+      // The frame is measured after mount and again on resize; a stored spot is
+      // a fraction of the pill's travel range, so only the frame size is needed
+      // to turn it back into pixels.
+      const rootRef = useRef(null)
+      const [frame, setFrame] = useState({ width: 0, height: 0, left: 0, top: 0 })
+      useEffect(() => {
+        const measure = () => setFrame(measureFrame(rootRef.current))
+        measure()
+        window.addEventListener('resize', measure)
+        return () => window.removeEventListener('resize', measure)
+      }, [])
+
+      // The pill's own size decides the travel range, so it is measured rather
+      // than assumed: a hardcoded width would let a saved `x: 1` sit short of the
+      // right edge (or push past it) whenever the label grew.
+      const [size, setSize] = useState({ width: 0, height: PILL_HEIGHT })
+      useEffect(() => {
+        const element = rootRef.current
+        if (element === null) return
+        const rect = element.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return
+        setSize((previous) =>
+          Math.abs(previous.width - rect.width) < 0.5 && Math.abs(previous.height - rect.height) < 0.5
+            ? previous
+            : { width: rect.width, height: rect.height },
+        )
+      })
+
+      const position = useMemo(() => {
+        // Until both the layer and the pill are measured, a saved spot cannot be
+        // converted; showing the corner preset for that one frame avoids a flash
+        // at the top-left corner.
+        if (schedule.spot !== null && frame.width > 0 && size.width > 0) {
+          return spotToPixels(schedule.spot, frame, size)
+        }
+        return CORNER_STYLE[schedule.position] ?? CORNER_STYLE['bottom-right']
+      }, [schedule.spot, schedule.position, frame, size])
+
+      const closePanel = useCallback(() => setPanelOpen(false), [])
+      const openPanel = useCallback(() => setPanelOpen(true), [])
+
+      /**
+       * Drag the pill anywhere in the frame.
+       *
+       * Pointer capture keeps the events coming while the pointer leaves the
+       * pill, and a movement threshold separates a drag from a click so a press
+       * that is meant to open the panel still opens it. The position is written
+       * back only on release: committing per frame would flood the Host with
+       * writes for a gesture nobody has finished.
+       */
+      const dragRef = useRef(null)
+      const [dragging, setDragging] = useState(false)
+
+      const onPointerDown = useCallback(
+        (event) => {
+          if (event.button !== 0) return
+          const element = rootRef.current
+          if (element === null) return
+          const frame = measureFrame(element)
+          // No measurable positioning layer means the pill's own coordinates are
+          // unknown; refusing to start is better than dropping it at (0,0).
+          if (frame.width === 0 || frame.height === 0) return
+          const own = element.getBoundingClientRect()
+          const bounds = { width: frame.width, height: frame.height, left: frame.left, top: frame.top }
+          dragRef.current = {
+            pointerId: event.pointerId,
+            element,
+            originX: event.clientX,
+            originY: event.clientY,
+            startLeft: own.left - bounds.left,
+            startTop: own.top - bounds.top,
+            moved: false,
+            bounds,
+            size: { width: own.width, height: own.height },
+          }
+          // Pointer capture is NOT taken here on purpose. Capturing on press
+          // retargets every later event — including the click — to the pill, so a
+          // plain tap would stop opening the panel. It is taken on the first
+          // move that clears the threshold, once the gesture is known to be a
+          // drag rather than a click.
+        },
+        [],
+      )
+
+      const onPointerMove = useCallback((event) => {
+        const drag = dragRef.current
+        if (drag === null || drag.pointerId !== event.pointerId) return
+        const dx = event.clientX - drag.originX
+        const dy = event.clientY - drag.originY
+        if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+        if (!drag.moved) {
+          drag.moved = true
+          setDragging(true)
+          // Now that this is a drag, keep the events coming even when the
+          // pointer leaves the pill's box.
+          try {
+            drag.element.setPointerCapture(drag.pointerId)
+          } catch {
+            // A pointer that already ended cannot be captured; the drag simply
+            // stops following, which the release path already handles.
+          }
+        }
+        // Follow the pointer directly; the stored fraction is recomputed on
+        // release from wherever it was dropped.
+        const left = Math.min(Math.max(drag.startLeft + dx, 0), Math.max(0, drag.bounds.width - drag.size.width))
+        const top = Math.min(Math.max(drag.startTop + dy, 0), Math.max(0, drag.bounds.height - drag.size.height))
+        if (drag.element !== null) {
+          drag.element.style.left = `${left}px`
+          drag.element.style.top = `${top}px`
+          drag.element.style.right = 'auto'
+          drag.element.style.bottom = 'auto'
+        }
+      }, [])
+
+      const endDrag = useCallback(
+        (event) => {
+          const drag = dragRef.current
+          if (drag === null || drag.pointerId !== event.pointerId) return
+          dragRef.current = null
+          if (drag.element !== null && drag.element.hasPointerCapture(event.pointerId)) {
+            drag.element.releasePointerCapture(event.pointerId)
+          }
+          if (!drag.moved) {
+            // A press that never moved is a click; the button's own handler runs.
+            return
+          }
+          setDragging(false)
+          const own = drag.element.getBoundingClientRect()
+          const pixels = { left: own.left - drag.bounds.left, top: own.top - drag.bounds.top }
+          // Only `spot` is written. Sending `position` alongside it would make
+          // the Host clear the spot as a corner preset — the drag would vanish.
+          commit({ spot: pixelsToSpot(pixels, { width: bounds.width, height: bounds.height }, drag.size) }).catch(() => {})
+        },
+        [],
+      )
+
+      const clockIn = useCallback(() => {
+        const current = derivePhase(snapshot.state, new Date())
+        if (current.shift !== null) commit({ clockedInOn: current.shift.key }).catch(() => {})
+      }, [])
+
+      const acknowledge = useCallback(() => {
+        const current = derivePhase(snapshot.state, new Date())
+        if (current.shift !== null) commit({ dismissedOn: current.shift.key }).catch(() => {})
+      }, [])
+
+      // The accent drives the card through a CSS custom property rather than
+      // inline rules on every child, so one style object recolours the whole
+      // component and the breathing animation can read the same value.
+      const accentStyle = {
+        '--dsh-offwork-accent': accent.fill,
+        '--dsh-offwork-ink': accent.ink,
+        '--dsh-offwork-pulse': `${schedule.pulseSeconds}s`,
+      }
+
+      const collapsed = phase === 'hidden'
+      const pillClass = [
+        'dsh-offwork-pill',
+        `dsh-offwork-${phase}`,
+        shaking ? 'dsh-offwork-shake' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+
+      return h(
+        React.Fragment,
+        null,
+        h(Styles),
+        // Only the phase's statement is announced, never the ticking number.
+        h('span', { className: 'dsh-offwork-srOnly', role: 'status' }, labels.primary),
+        collapsed
+          ? h(
+              'button',
+              {
+                type: 'button',
+                className: dragging ? 'dsh-offwork-launcher dsh-offwork-grabbing' : 'dsh-offwork-launcher',
+                style: position,
+                onClick: openPanel,
+                onPointerDown,
+                onPointerMove,
+                onPointerUp: endDrag,
+                onPointerCancel: endDrag,
+                title: t('open'),
+                'aria-label': t('open'),
+              },
+              h('span', { className: 'dsh-offwork-launcherDot' }),
+            )
+          : h(
+              'div',
+              {
+                className: dragging ? `${pillClass} dsh-offwork-grabbing` : pillClass,
+                style: { ...position, ...accentStyle },
+                ref: rootRef,
+                onPointerDown,
+                onPointerMove,
+                onPointerUp: endDrag,
+                onPointerCancel: endDrag,
+              },
+              h(
+                'div',
+                { className: 'dsh-offwork-main' },
+                h('span', { className: 'dsh-offwork-dot', 'aria-hidden': true }),
+                h(
+                  'button',
+                  { type: 'button', className: 'dsh-offwork-copy', onClick: openPanel, title: t('open') },
+                  h('span', { className: 'dsh-offwork-line' }, labels.primary),
+                  // The live number gets its own line so it never reads as a
+                  // second clock time beside the schedule.
+                  labels.secondary === ''
+                    ? null
+                    : h('span', { className: 'dsh-offwork-clock' }, labels.secondary),
+                ),
+              ),
+              // The one action this phase offers. `waiting` invites the daily
+              // clock-in; `due` acknowledges the reminder. Both are the same
+              // shape so the pill never jumps between sizes.
+              phase === 'waiting'
+                ? h('button', { type: 'button', className: 'dsh-offwork-action', onClick: clockIn }, t('act.clockIn'))
+                : null,
+              phase === 'due'
+                ? h('button', { type: 'button', className: 'dsh-offwork-action', onClick: acknowledge }, t('act.known'))
+                : null,
+              phase === 'due' || phase === 'waiting'
+                ? null
+                : h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-offwork-gear',
+                      onClick: openPanel,
+                      title: t('open'),
+                      'aria-label': t('open'),
+                    },
+                    '⚙',
+                  ),
+            ),
+        panelOpen ? h(MemoSettingsPanel, { onClose: closePanel, frame }) : null,
+      )
+    }
+
+    // ---- theme (optional service) -------------------------------------------
+    //
+    // The theme service is optional: a page without it still renders, using the
+    // light fills. It is read through the module-level bridge below so the pill
+    // can subscribe without threading the context through React.
+
+    let themeService = null
+
+    /**
+     * Cached theme snapshots.
+     *
+     * `useSyncExternalStore` compares snapshots with `Object.is` while rendering
+     * and again right after subscribing, so `getSnapshot` MUST return the same
+     * reference until the value actually changes. Returning a fresh object each
+     * call makes React re-render forever and the slot entry ends up blank — that
+     * is exactly what a `{ dark: false }` literal here caused once. Two frozen
+     * objects, one per scheme, are all this ever needs.
+     */
+    const THEME_SNAPSHOT_LIGHT = Object.freeze({ dark: false })
+    const THEME_SNAPSHOT_DARK = Object.freeze({ dark: true })
+
+    function ctxThemeSnapshot() {
+      if (themeService === null) return THEME_SNAPSHOT_LIGHT
+      try {
+        const value = themeService.getTheme()
+        // The presenter switches the palette from `colorScheme`, never from the
+        // id: a user theme may call itself anything, so the id says nothing
+        // about which fill of an accent preset to use.
+        return value?.active?.colorScheme === 'dark' ? THEME_SNAPSHOT_DARK : THEME_SNAPSHOT_LIGHT
+      } catch {
+        return THEME_SNAPSHOT_LIGHT
+      }
+    }
+
+    /** The listeners `theme/change` fans out to; empty without a theme service. */
+    const themeChangeListeners = new Set()
+
+    function ctxThemeSubscribe(listener) {
+      themeChangeListeners.add(listener)
+      return () => {
+        themeChangeListeners.delete(listener)
+      }
+    }
+
+    // ---- the settings panel -------------------------------------------------
+
+    /**
+     * The settings surface: every control the pill's behaviour has, each write
+     * going straight to the Host.
+     *
+     * A popover, not a modal dialog: it is small, has no destructive action, and
+     * anchors to the same corner as the pill. Escape and a click outside close
+     * it; focus moves into the card on open.
+     * @param {{onClose: () => void}} props - the close callback.
+     * @returns {object} the panel element.
+     */
+/**
+     * The settings form itself, shared by its two homes.
+     *
+     * It is one component because the fields, the validation and the write path
+     * must not fork: the popover beside the pill and the section on the plugin's
+     * detail page are two shells around this same body, so a setting changed in
+     * one place behaves identically in the other.
+     * @returns {object} the form content.
+     */
+    function SettingsForm() {
+      const store = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+      const schedule = store.state
+      const [lastError, setLastError] = useState(null)
+
+      const write = useCallback((patch) => {
+        setLastError(null)
+        commit(patch).catch((error) => setLastError(messageOf(error)))
+      }, [])
+
+      const toggleDay = useCallback(
+        (day) => {
+          const next = schedule.workdays.includes(day)
+            ? schedule.workdays.filter((entry) => entry !== day)
+            : [...schedule.workdays, day].sort((left, right) => left - right)
+          // The Host refuses an empty set; refusing it here too makes the click
+          // a no-op instead of a round trip that rolls the control back.
+          if (next.length === 0) {
+            setLastError(t('panel.daysRequired'))
+            return
+          }
+          write({ workdays: next })
+        },
+        [schedule.workdays, write],
+      )
+
+      const setTime = useCallback(
+        (field, value) => {
+          // `<input type="time">` emits '' while a field is half-typed; writing
+          // that would store a value the Host refuses.
+          if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return
+          const other = field === 'startTime' ? schedule.endTime : schedule.startTime
+          if (value === other) {
+            setLastError(t('panel.shiftInvalid'))
+            return
+          }
+          write({ [field]: value })
+        },
+        [schedule.startTime, schedule.endTime, write],
+      )
+
+      const showLoadError = store.status === 'failed' && store.error !== null && lastError === null
+      const derived = derivePhase(schedule, new Date())
+      const dismissedThisShift = derived.shift !== null && schedule.dismissedOn === derived.shift.key
+      const overnight = minutesOf(schedule.startTime) >= minutesOf(schedule.endTime)
+      const customActive = ACCENTS[schedule.accentColor] === undefined
+
+      return h(
+        React.Fragment,
+        null,
+
+          store.status === 'loading' ? h('div', { className: 'dsh-offwork-note' }, t('panel.loading')) : null,
+          showLoadError
+            ? h(
+                'div',
+                { className: 'dsh-offwork-note dsh-offwork-bad' },
+                t('panel.loadFailed'),
+                ' ',
+                h('button', { type: 'button', className: 'dsh-offwork-link', onClick: reload }, t('panel.retry')),
+              )
+            : null,
+          lastError !== null
+            ? h('div', { className: 'dsh-offwork-note dsh-offwork-bad' }, t('panel.failed', { message: lastError }))
+            : null,
+
+          // ---- shift ----
+          h('div', { className: 'dsh-offwork-group' }, t('panel.sectionTime')),
+          h(
+            'label',
+            { className: 'dsh-offwork-row' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.startTime')),
+            h('input', {
+              type: 'time',
+              className: 'dsh-offwork-input',
+              value: schedule.startTime,
+              onChange: (event) => setTime('startTime', event.target.value),
+            }),
+          ),
+          h(
+            'label',
+            { className: 'dsh-offwork-row' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.endTime')),
+            h('input', {
+              type: 'time',
+              className: 'dsh-offwork-input',
+              value: schedule.endTime,
+              onChange: (event) => setTime('endTime', event.target.value),
+            }),
+          ),
+          overnight ? h('div', { className: 'dsh-offwork-note' }, t('panel.overnight')) : null,
+
+          // ---- reminders ----
+          h('div', { className: 'dsh-offwork-group' }, t('panel.sectionWarn')),
+          h(
+            'label',
+            { className: 'dsh-offwork-row' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.lead')),
+            h(
+              'select',
+              {
+                className: 'dsh-offwork-input',
+                value: String(schedule.leadMinutes),
+                onChange: (event) => write({ leadMinutes: Number(event.target.value) }),
+              },
+              [0, 5, 10, 15, 30, 60].map((minutes) =>
+                h(
+                  'option',
+                  { key: minutes, value: String(minutes) },
+                  minutes === 0 ? t('panel.leadNone') : t('panel.leadValue', { n: minutes }),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'label',
+            { className: 'dsh-offwork-row' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.pulseLabel')),
+            h(
+              'select',
+              {
+                className: 'dsh-offwork-input',
+                value: String(schedule.pulseSeconds),
+                onChange: (event) => write({ pulseSeconds: Number(event.target.value) }),
+              },
+              [1.2, 1.8, 3].map((seconds) =>
+                h(
+                  'option',
+                  { key: seconds, value: String(seconds) },
+                  seconds === 1.2 ? t('panel.pulseFast') : seconds === 1.8 ? t('panel.pulseNormal') : t('panel.pulseSlow'),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'label',
+            { className: 'dsh-offwork-row' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.windowLabel')),
+            h(
+              'select',
+              {
+                className: 'dsh-offwork-input',
+                value: String(schedule.remindWindowMinutes),
+                onChange: (event) => write({ remindWindowMinutes: Number(event.target.value) }),
+              },
+              [60, 120, 240, 480].map((minutes) =>
+                h('option', { key: minutes, value: String(minutes) }, t('panel.windowValue', { n: minutes / 60 })),
+              ),
+            ),
+          ),
+          h('div', { className: 'dsh-offwork-hint' }, t('panel.windowHint')),
+
+          h(
+            'div',
+            { className: 'dsh-offwork-field' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.workdays')),
+            h(
+              'div',
+              { className: 'dsh-offwork-days', role: 'group', 'aria-label': t('panel.workdays') },
+              [1, 2, 3, 4, 5, 6, 7].map((day) =>
+                h(
+                  'button',
+                  {
+                    key: day,
+                    type: 'button',
+                    className: schedule.workdays.includes(day)
+                      ? 'dsh-offwork-day dsh-offwork-dayOn'
+                      : 'dsh-offwork-day',
+                    'aria-pressed': schedule.workdays.includes(day),
+                    'aria-label': t(`day.${day}`),
+                    onClick: () => toggleDay(day),
+                  },
+                  t(`day.${day}`),
+                ),
+              ),
+            ),
+          ),
+
+          // ---- appearance ----
+          h('div', { className: 'dsh-offwork-group' }, t('panel.sectionLook')),
+          h(
+            'div',
+            { className: 'dsh-offwork-field' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.accent')),
+            h(
+              'div',
+              { className: 'dsh-offwork-swatches', role: 'group', 'aria-label': t('panel.accent') },
+              ACCENT_ORDER.map((name) =>
+                h('button', {
+                  key: name,
+                  type: 'button',
+                  className:
+                    schedule.accentColor === name ? 'dsh-offwork-swatch dsh-offwork-swatchOn' : 'dsh-offwork-swatch',
+                  style: { '--dsh-offwork-swatch': ACCENTS[name].light },
+                  title: t(ACCENTS[name].label),
+                  'aria-label': t(ACCENTS[name].label),
+                  'aria-pressed': schedule.accentColor === name,
+                  onClick: () => write({ accentColor: name }),
+                }),
+              ),
+              // The fallback the request asked for: any colour at all. The
+              // input's value shows the current custom fill, or the red preset's
+              // when a preset is active, so the control is never blank.
+              h('label', {
+                className: customActive ? 'dsh-offwork-swatch dsh-offwork-swatchOn dsh-offwork-swatchCustom' : 'dsh-offwork-swatch dsh-offwork-swatchCustom',
+                style: { '--dsh-offwork-swatch': customActive ? schedule.accentColor : ACCENTS.red.light },
+                title: t('panel.custom'),
+              },
+                h('input', {
+                  type: 'color',
+                  className: 'dsh-offwork-colorInput',
+                  value: customActive ? schedule.accentColor : ACCENTS.red.light,
+                  'aria-label': t('panel.custom'),
+                  onChange: (event) => write({ accentColor: event.target.value }),
+                }),
+              ),
+            ),
+          ),
+
+          h(
+            'label',
+            { className: 'dsh-offwork-row' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.position')),
+            h(
+              'select',
+              {
+                className: 'dsh-offwork-input',
+                value: schedule.position,
+                onChange: (event) => write({ position: event.target.value }),
+              },
+              CORNERS.map((position) => h('option', { key: position, value: position }, t(`pos.${position}`))),
+            ),
+          ),
+          schedule.spot === null
+            ? h('div', { className: 'dsh-offwork-hint' }, t('panel.dragHint'))
+            : h(
+                'div',
+                { className: 'dsh-offwork-hint' },
+                t('panel.dragHint'),
+                ' ',
+                h(
+                  'button',
+                  { type: 'button', className: 'dsh-offwork-link', onClick: () => write({ spot: null }) },
+                  t('panel.resetSpot'),
+                ),
+              ),
+
+          h(
+            'label',
+            { className: 'dsh-offwork-row dsh-offwork-switchRow' },
+            h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.enabled')),
+            h('input', {
+              type: 'checkbox',
+              className: 'dsh-offwork-check',
+              checked: schedule.enabled,
+              onChange: (event) => write({ enabled: event.target.checked }),
+            }),
+          ),
+
+
+          // The clock-in rule is the one piece of behaviour a reader cannot
+          // infer from the controls, so it is stated once.
+          h('div', { className: 'dsh-offwork-hint' }, t('panel.clockInHint')),
+
+          // A dismissed shift is the one state with no way back from the pill,
+          // which has collapsed by then.
+          dismissedThisShift
+            ? h(
+                'div',
+                { className: 'dsh-offwork-row' },
+                h('span', { className: 'dsh-offwork-rowLabel' }, t('act.known')),
+                h(
+                  'button',
+                  { type: 'button', className: 'dsh-offwork-link', onClick: () => write({ dismissedOn: null }) },
+                  t('panel.retry'),
+                ),
+              )
+            : null,
+
+          h('div', { className: 'dsh-offwork-foot' }, t('panel.hint')),
+      )
+    }
+
+    /**
+     * The popover shell: the form anchored beside the pill.
+     *
+     * A transparent catcher rather than a dim backdrop — this is a popover, and
+     * dimming the whole app to change a schedule is heavier than the interaction
+     * deserves. It still closes on a click outside.
+     * @param {{onClose: () => void, frame: object}} props - close callback and layer size.
+     * @returns {object} the popover element.
+     */
+    function SettingsPanel({ onClose, frame }) {
+      const store = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+      const cardRef = useRef(null)
+
+      useEffect(() => {
+        const card = cardRef.current
+        if (card !== null && typeof card.focus === 'function') card.focus()
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            onClose()
+          }
+        }
+        document.addEventListener('keydown', onKeyDown, true)
+        return () => document.removeEventListener('keydown', onKeyDown, true)
+      }, [onClose])
+
+      const anchor = panelAnchorFor(store.state, frame)
+
+      return h(
+        React.Fragment,
+        null,
+        h(Styles),
+        h('div', { className: 'dsh-offwork-catcher', onClick: onClose, 'aria-hidden': true }),
+        h(
+          'div',
+          {
+            className: 'dsh-offwork-panel',
+            style: anchor,
+            role: 'dialog',
+            'aria-modal': false,
+            'aria-label': t('panel.title'),
+            tabIndex: -1,
+            ref: cardRef,
+          },
+          h(
+            'div',
+            { className: 'dsh-offwork-head' },
+            h(
+              'div',
+              { className: 'dsh-offwork-headText' },
+              h('div', { className: 'dsh-offwork-title' }, t('panel.title')),
+              h('div', { className: 'dsh-offwork-subtitle' }, t('panel.subtitle')),
+            ),
+            h(
+              'button',
+              { type: 'button', className: 'dsh-offwork-close', onClick: onClose, 'aria-label': t('panel.close') },
+              '✕',
+            ),
+          ),
+          h(SettingsForm),
+        ),
+      )
+    }
+
+    /**
+     * The settings section on this plugin's own detail page.
+     *
+     * The detail page renders one contribution per plugin and asks each to draw
+     * its own chrome, returning null for a subject it has nothing for — so the
+     * first thing here is the subject check. It accepts both forms the page uses
+     * for this plugin: its bundle page and its single row.
+     * @param {{subject: object}} props - the page's subject.
+     * @returns {object | null} the section, or null for another plugin's page.
+     */
+    function DetailSection({ subject }) {
+      if (!isOwnSubject(subject)) return null
+      return h(
+        React.Fragment,
+        null,
+        h(Styles),
+        h(
+          'section',
+          { className: 'dsh-offwork-section', 'aria-label': t('panel.title') },
+          h(
+            'div',
+            { className: 'dsh-offwork-head' },
+            h(
+              'div',
+              { className: 'dsh-offwork-headText' },
+              h('div', { className: 'dsh-offwork-title' }, t('panel.title')),
+              h('div', { className: 'dsh-offwork-subtitle' }, t('panel.subtitle')),
+            ),
+          ),
+          h(SettingsForm),
+        ),
+      )
+    }
+
+    /**
+     * Whether a detail page is about this plugin.
+     *
+     * `subject.pkg.name` is the npm package name for both the bundle page and a
+     * row page; an `item` subject belongs to the official catalogue instead and
+     * is never this package.
+     * @param {object} subject - the page's subject.
+     * @returns {boolean} true when the form belongs here.
+     */
+    function isOwnSubject(subject) {
+      if (subject === null || typeof subject !== 'object') return false
+      if (subject.kind !== 'bundle' && subject.kind !== 'row') return false
+      const name = subject.pkg?.name ?? subject.packageName ?? subject.name
+      return name === PACKAGE_NAME
+    }
+
+    /**
+     * The panel, memoized.
+     *
+     * The pill re-renders every second for the countdown; `onClose` is a stable
+     * callback, so this wrapper stops that tick from reaching an open form. The
+     * comparison is explicit because `frame` is an object rebuilt on each pill
+     * render: without it, every tick would remount the form.
+     */
+    const MemoSettingsPanel = React.memo(
+      SettingsPanel,
+      (previous, next) =>
+        previous.onClose === next.onClose &&
+        previous.frame.width === next.frame.width &&
+        previous.frame.height === next.frame.height,
+    )
+
+    // ---- styles -------------------------------------------------------------
+    //
+    // Every colour is a theme token or a resolved accent, so the widget follows
+    // light/dark and any themed build; only the drop shadows are literal,
+    // because they describe depth rather than a palette role.
+
+    function Styles() {
+      return h('style', { 'data-dsh-plugin': 'dsh-offwork-countdown' }, CSS)
+    }
+
+    const CSS = `
+/* ---- the pill ---------------------------------------------------------- */
+.dsh-offwork-pill{position:absolute;z-index:30;display:flex;align-items:center;height:48px;max-width:min(420px,calc(100vw - 32px));border-radius:999px;border:2px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay);box-shadow:0 6px 20px rgba(0,0,0,.16);overflow:hidden;pointer-events:auto;font-size:14px;line-height:20px;color:var(--dsw-alias-label-primary);transition:border-color 220ms ease,box-shadow 220ms ease,background 220ms ease}
+.dsh-offwork-main{display:flex;align-items:center;gap:9px;min-width:0;padding:0 12px 0 16px}
+.dsh-offwork-dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--dsw-alias-state-idle-primary);transition:background 220ms ease}
+/* Two stacked lines: a fact on top, the one live number below. Stacking is what
+   keeps the schedule time and the countdown from reading as two clock times. */
+.dsh-offwork-copy{display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0;max-width:220px;padding:0;border:0;background:none;font:inherit;color:inherit;text-align:start;cursor:pointer}
+.dsh-offwork-copy:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px;border-radius:6px}
+.dsh-offwork-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;line-height:17px}
+.dsh-offwork-clock{font-variant-numeric:tabular-nums;font-size:12px;line-height:15px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.dsh-offwork-action{flex:none;height:28px;margin:0 6px 0 2px;padding:0 12px;border:0;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer;white-space:nowrap;transition:background 160ms ease}
+.dsh-offwork-action:hover{background:var(--dsw-alias-border-l2)}
+.dsh-offwork-action:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.dsh-offwork-gear{flex:none;width:32px;height:32px;margin-right:8px;padding:0;border:0;border-radius:50%;background:none;font-size:15px;line-height:1;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.dsh-offwork-gear:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dsh-offwork-gear:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+
+/* Grab affordances: the pill is draggable, so the cursor says so and a drag in
+   progress drops the transition that would otherwise lag behind the pointer. */
+.dsh-offwork-pill{cursor:grab;touch-action:none;user-select:none}
+.dsh-offwork-launcher{cursor:grab;touch-action:none}
+.dsh-offwork-grabbing{cursor:grabbing;transition:none;box-shadow:0 10px 30px rgba(0,0,0,.28);z-index:33}
+.dsh-offwork-grabbing *{cursor:grabbing}
+/* While dragging, buttons inside must not swallow the gesture. */
+.dsh-offwork-grabbing .dsh-offwork-copy,.dsh-offwork-grabbing .dsh-offwork-action,.dsh-offwork-grabbing .dsh-offwork-gear{pointer-events:none}
+
+.dsh-offwork-launcher{position:absolute;z-index:30;display:grid;place-items:center;width:30px;height:30px;padding:0;border-radius:50%;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay);box-shadow:0 3px 12px rgba(0,0,0,.12);cursor:grab;pointer-events:auto;opacity:.5;transition:opacity 160ms ease}
+.dsh-offwork-launcher:hover,.dsh-offwork-launcher:focus-visible{opacity:1}
+.dsh-offwork-launcher:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.dsh-offwork-launcherDot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-idle-primary)}
+
+/* ---- waiting: the shift started, today's clock-in is not marked ---------- */
+.dsh-offwork-waiting{border-color:var(--dsw-alias-state-warn-primary)}
+.dsh-offwork-waiting .dsh-offwork-line{font-size:14px;line-height:20px}
+.dsh-offwork-waiting .dsh-offwork-dot{background:var(--dsw-alias-state-warn-primary)}
+.dsh-offwork-waiting .dsh-offwork-action{background:var(--dsw-alias-state-warn-primary);color:#27241f;font-weight:600}
+.dsh-offwork-waiting .dsh-offwork-action:hover{filter:brightness(1.06)}
+
+/* ---- soon: the heads-up window, warn accent ----------------------------- */
+.dsh-offwork-soon{border-color:var(--dsw-alias-state-warn-primary)}
+.dsh-offwork-soon .dsh-offwork-dot{background:var(--dsw-alias-state-warn-primary)}
+.dsh-offwork-soon .dsh-offwork-clock{color:var(--dsw-alias-state-warn-primary);font-weight:600}
+
+/* ---- due: the accent fills the card, and the pill breathes -------------- */
+.dsh-offwork-due{border-color:var(--dsh-offwork-accent);background:var(--dsh-offwork-accent);color:var(--dsh-offwork-ink);box-shadow:0 6px 24px color-mix(in srgb, var(--dsh-offwork-accent) 55%, transparent);animation:dsh-offwork-breathe var(--dsh-offwork-pulse, 1.8s) ease-in-out infinite}
+.dsh-offwork-due .dsh-offwork-dot{background:var(--dsh-offwork-ink);opacity:.85;animation:dsh-offwork-beat var(--dsh-offwork-pulse, 1.8s) ease-in-out infinite}
+.dsh-offwork-due .dsh-offwork-gear{color:var(--dsh-offwork-ink)}
+.dsh-offwork-due .dsh-offwork-action{background:color-mix(in srgb, var(--dsh-offwork-ink) 18%, transparent);color:var(--dsh-offwork-ink);font-weight:600}
+.dsh-offwork-due .dsh-offwork-action:hover{background:color-mix(in srgb, var(--dsh-offwork-ink) 28%, transparent)}
+.dsh-offwork-due .dsh-offwork-gear:hover{background:color-mix(in srgb, var(--dsh-offwork-ink) 18%, transparent)}
+.dsh-offwork-due .dsh-offwork-copy:focus-visible,.dsh-offwork-due .dsh-offwork-action:focus-visible,.dsh-offwork-due .dsh-offwork-gear:focus-visible{outline-color:var(--dsh-offwork-ink)}
+@keyframes dsh-offwork-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}
+@keyframes dsh-offwork-beat{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.7);opacity:.35}}
+/* the arrival burst: three quick shakes, then the pill settles into breathing.
+   The burst belongs to the pill itself — its children are clipped by its own
+   rounded, hidden-overflow box, so a shake on a child would be cropped. */
+.dsh-offwork-shake{animation:dsh-offwork-shake 220ms ease-in-out 4}
+@keyframes dsh-offwork-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+@media (prefers-reduced-motion:reduce){.dsh-offwork-due{animation:none}.dsh-offwork-due .dsh-offwork-dot{animation:none}.dsh-offwork-shake{animation:none}}
+
+/* ---- the settings panel ------------------------------------------------- */
+/* On the plugin's detail page the form is normal page content, not a floating
+   card: no absolute box, no own surface — the page already provides both. */
+.dsh-offwork-section{display:flex;flex-direction:column;gap:9px;margin-top:14px;padding:16px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);font-size:13px;line-height:19px;color:var(--dsw-alias-label-primary)}
+.dsh-offwork-section .dsh-offwork-head{margin-bottom:2px}
+
+.dsh-offwork-catcher{position:absolute;inset:0;z-index:31;pointer-events:auto}
+/* Visually hidden, still announced: the phase label is the only text a screen
+   reader should hear change, never the once-a-second countdown. */
+.dsh-offwork-srOnly{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.dsh-offwork-panel{position:absolute;z-index:32;box-sizing:border-box;width:min(340px,calc(100vw - 32px));max-height:min(76vh,600px);overflow:auto;display:flex;flex-direction:column;gap:9px;padding:16px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);box-shadow:0 16px 40px rgba(0,0,0,.26);pointer-events:auto;font-size:13px;line-height:19px;color:var(--dsw-alias-label-primary)}
+.dsh-offwork-panel:focus{outline:none}
+.dsh-offwork-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.dsh-offwork-headText{min-width:0}
+.dsh-offwork-title{font-size:14px;font-weight:600}
+.dsh-offwork-subtitle{margin-top:3px;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.dsh-offwork-close{flex:none;width:26px;height:26px;padding:0;border:0;border-radius:7px;background:none;font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.dsh-offwork-close:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dsh-offwork-close:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.dsh-offwork-group{margin-top:6px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-secondary)}
+.dsh-offwork-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dsh-offwork-field{display:flex;flex-direction:column;gap:6px}
+.dsh-offwork-rowLabel{color:var(--dsw-alias-label-secondary)}
+.dsh-offwork-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary)}
+.dsh-offwork-input{min-width:132px;padding:6px 8px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;color-scheme:light dark}
+.dsh-offwork-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+
+.dsh-offwork-days{display:flex;gap:4px}
+.dsh-offwork-day{flex:1;padding:6px 0;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:none;font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.dsh-offwork-day:hover{border-color:var(--dsw-alias-border-l2)}
+.dsh-offwork-day:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.dsh-offwork-dayOn{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base);font-weight:600}
+
+/* The palette: nine presets then the custom picker, which is a colour input
+   disguised as one more swatch so the row reads as one control. */
+.dsh-offwork-swatches{display:flex;flex-wrap:wrap;gap:6px}
+.dsh-offwork-swatch{position:relative;width:26px;height:26px;padding:0;border:2px solid transparent;border-radius:50%;background:var(--dsh-offwork-swatch);cursor:pointer;box-shadow:inset 0 0 0 1px rgba(255,255,255,.28)}
+.dsh-offwork-swatch:hover{transform:scale(1.08)}
+.dsh-offwork-swatch:focus-within,.dsh-offwork-swatch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.dsh-offwork-swatchOn{border-color:var(--dsw-alias-label-primary)}
+.dsh-offwork-swatchCustom{display:grid;place-items:center;background:conic-gradient(from 0deg,#f87171,#fbbf24,#34d399,#38bdf8,#a78bfa,#f87171);cursor:pointer}
+.dsh-offwork-colorInput{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;opacity:0;cursor:pointer}
+
+.dsh-offwork-switchRow{cursor:pointer}
+.dsh-offwork-check{width:16px;height:16px;margin:0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
+.dsh-offwork-note{padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px}
+.dsh-offwork-bad{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 14%,transparent);color:var(--dsw-alias-label-primary)}
+.dsh-offwork-link{padding:0;border:0;background:none;font:inherit;color:var(--dsw-alias-brand-primary);cursor:pointer;text-decoration:underline}
+.dsh-offwork-foot{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary)}
+`
+
+    return {
+      // `theme` is optional: a page without it still renders, using the light
+      // fills, so it is declared for soft ordering rather than hard activation.
+      inject: ['slots', 'locale', 'theme'],
+      apply(ctx) {
+        const locale = ctx.get('locale')
+        if (locale !== undefined && typeof locale.register === 'function' && typeof locale.bind === 'function') {
+          ctx.effect(() => locale.register(NS, DICT), 'dsh-offwork-countdown: dictionaries')
+          translate = locale.bind(NS)
+        }
+        const theme = ctx.get('theme')
+        if (theme !== undefined && typeof theme.getTheme === 'function') {
+          themeService = theme
+          ctx.effect(
+            () =>
+              ctx.on('theme/change', () => {
+                for (const listener of [...themeChangeListeners]) listener()
+              }),
+            'dsh-offwork-countdown: theme changes',
+          )
+        }
+        ctx.slots.inject('shell.overlay', () =>
+          ctx.slots.register({ name: 'shell.overlay', id: 'dsh-offwork-countdown', order: 40, locale: NS }, Pill),
+        )
+        // The same form also lives on this plugin's detail page, which is where
+        // someone looking for its settings goes first. Both homes render the one
+        // SettingsForm, so the two can never drift apart.
+        ctx.slots.inject('plugins.detail.section', () =>
+          ctx.slots.register({ name: 'plugins.detail.section', id: 'dsh-offwork-countdown', order: 60, locale: NS },
+            DetailSection),
+        )
+      },
+    }
+  },
+})

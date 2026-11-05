@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Clock-out Countdown",
+    "description": "A floating pill counts down to your off-work time and turns red and shakes when it arrives, so you do not forget to clock out."
+  }
+}

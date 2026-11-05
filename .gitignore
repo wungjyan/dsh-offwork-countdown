@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Dependencies, if anyone ever adds a toolchain
+node_modules/
+
+# Local state and debug output
+*.log
+.env
+.env.*
+
+# Design notes kept local, not published.
+#
+# OPTIMIZATION.md is a working document: it records the exploratory discussion,
+# rejected options, measured colour tables and the bug post-mortems that led
+# here. That is useful to whoever maintains the plugin and noise to everyone
+# else, so it stays out of the repository. The durable conclusions live in
+# README.md; if a design decision ever needs its reasoning recorded publicly,
+# it belongs there rather than in a resurrected copy of the notes.
+OPTIMIZATION.md
