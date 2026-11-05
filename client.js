@@ -53,7 +53,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
+    const { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
     const NS = 'dsh-offwork-countdown'
     const STATE_PATH = '/dsh-offwork-countdown/state'
@@ -628,12 +628,15 @@ window.__ModuleLoader__.load({
       const { x, y } = value
       const usable = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1
       if (!usable(x) || !usable(y)) return null
-      // Exactly (0,0) is never something a drag produces by intent: a pointer
-      // release at the very corner means the gesture was measured against a
-      // wrong origin (the slot wrapper has no layout box). Treat it as "no saved
-      // position" so the pill returns to its configured corner instead of being
-      // stranded in the top-left.
-      if (x === 0 && y === 0) return null
+      // `(0,0)`, the exact top-left, is a real place to park the pill and is
+      // kept. It used to be rejected as "no saved position": back when the
+      // overlay layer was measured with `getBoundingClientRect()` on the slot's
+      // `display:contents` wrapper, that call returned all zeros, so EVERY drag
+      // reported (0,0) and storing it stranded the pill in the corner. Those
+      // measurements now come from `offsetParent` (see `measureFrame`) and a
+      // drag refuses to start at all while the frame is unmeasurable, so the
+      // value can only come from a gesture that genuinely ended there. Treating
+      // it as absent meant dragging to that corner was silently undone.
       return { x, y }
     }
 
@@ -725,6 +728,40 @@ window.__ModuleLoader__.load({
     /** How close two positions must be, in px, before a press counts as a drag. */
     const DRAG_THRESHOLD = 3
 
+    /** The four inline properties a drag writes directly and a re-render must own. */
+    const OFFSET_PROPERTIES = ['left', 'top', 'right', 'bottom']
+
+    /**
+     * Put the pill's inline offsets back under React's control.
+     *
+     * `onPointerMove` writes `element.style` imperatively, because following the
+     * pointer through a state update per frame would re-render the whole pill
+     * (and the countdown text in it) sixty times a second. React only touches a
+     * style it believes changed, so the next render's `style` object can be
+     * identical to the previous one — which is exactly the case when a drag ends
+     * and the stored position does not change — and React then writes nothing.
+     * The imperative values would stay in the DOM while the state says otherwise:
+     * that divergence is how the pill could sit at the top-left with the panel
+     * opening at the configured bottom-left corner.
+     *
+     * Writing the declarations again is not enough on its own: React's style
+     * diff compares against the values it rendered last, not against the DOM, so
+     * it would skip them as unchanged. Clearing the four properties first makes
+     * the DOM match "nothing rendered" for them, and the caller then re-applies
+     * `desired` explicitly. Declarations the pill does not control (the accent
+     * custom properties, also on this element) are never touched.
+     * @param {HTMLElement | null} element - the pill element.
+     * @param {object} desired - the position declarations React renders.
+     */
+    function reclaimOffsets(element, desired) {
+      if (element === null || element === undefined) return
+      for (const property of OFFSET_PROPERTIES) element.style[property] = ''
+      for (const property of OFFSET_PROPERTIES) {
+        const value = desired[property]
+        if (value !== undefined) element.style[property] = typeof value === 'number' ? `${value}px` : String(value)
+      }
+    }
+
     /**
      * Turn a stored fraction into a pixel offset inside a frame of `frame` size.
      *
@@ -771,18 +808,55 @@ window.__ModuleLoader__.load({
      * @param {number} panelHeight - the panel's estimated height in px.
      * @returns {object} inline offsets for the panel.
      */
-    function panelAnchorFor(schedule, frame, panelHeight = 420) {
+    function panelAnchorFor(schedule, frame, panelHeight = 0) {
       if (schedule.spot !== null && frame.width > 0) {
         const pixels = spotToPixels(schedule.spot, frame, { width: 320, height: PILL_HEIGHT })
-        const below = pixels.top + PILL_HEIGHT + 8
-        // Flip above the pill when there is no room below it.
-        const top = below + panelHeight <= frame.height ? below : Math.max(8, pixels.top - panelHeight - 8)
-        const left = Math.min(Math.max(8, pixels.left), Math.max(8, frame.width - 348))
+        const GAP = 8
+        const EDGE = 8
+        // Vertical: pick the side with more room, then clamp BOTH ends.
+        //
+        // A corner preset anchors `bottom`, so the panel grows UPWARD into the
+        // frame and the CSS `max-height` alone keeps it inside. A dragged spot
+        // anchors `top`, so the panel grows DOWNWARD: past the middle of the
+        // window there is no longer enough room for a full-height form, and
+        // `max-height` does not help — it caps the height but the element still
+        // hangs off the bottom edge, which is what pushed the whole page scroll
+        // height out and looked like the panel "stretching the window".
+        //
+        // `panelHeight` is the measured height (0 before the first layout), and
+        // the fallback deliberately matches what the CSS actually allows rather
+        // than a smaller guess: the old 420 against a 600px cap is why the flip
+        // decision believed there was room that was not there.
+        const height = panelHeight > 0 ? panelHeight : Math.min(600, frame.height * 0.76)
+        const belowTop = pixels.top + PILL_HEIGHT + GAP
+        const aboveTop = pixels.top - height - GAP
+        const roomBelow = frame.height - EDGE - belowTop
+        const roomAbove = pixels.top - GAP - EDGE
+        let top
+        if (roomBelow >= height) top = belowTop
+        else if (roomAbove >= height) top = aboveTop
+        else top = roomBelow >= roomAbove ? belowTop : aboveTop
+        // Whichever side won, the panel may still be taller than the space it
+        // chose; keep it inside the frame so it never enlarges the page.
+        const maxTop = Math.max(EDGE, frame.height - height - EDGE)
+        top = Math.min(Math.max(top, EDGE), maxTop)
+        const left = Math.min(Math.max(EDGE, pixels.left), Math.max(EDGE, frame.width - 348))
         return { top, left }
       }
       const base = CORNER_STYLE[schedule.position] ?? CORNER_STYLE['bottom-right']
-      const vertical = base.bottom !== undefined ? { bottom: base.bottom + PILL_HEIGHT + 8 } : { top: base.top + PILL_HEIGHT + 8 }
-      const horizontal = base.right !== undefined ? { right: base.right } : { left: base.left }
+      // `!== undefined` is the wrong test here: every corner states BOTH axes and
+      // writes the unused one as the string 'auto' (see CORNER_STYLE), so the key
+      // always exists. Testing presence picked `bottom` for a top corner and then
+      // computed `'auto' + 48 + 8`, which concatenates to the invalid value
+      // "auto488" — the declaration is dropped, the panel gets no vertical anchor
+      // at all and lands over the pill it was opened from. Only a number means
+      // "this axis is the anchored one".
+      const vertical = typeof base.bottom === 'number'
+        ? { bottom: base.bottom + PILL_HEIGHT + 8 }
+        : { top: base.top + PILL_HEIGHT + 8 }
+      const horizontal = typeof base.right === 'number'
+        ? { right: base.right }
+        : { left: base.left }
       return { ...vertical, ...horizontal }
     }
 
@@ -930,6 +1004,22 @@ window.__ModuleLoader__.load({
       const dragRef = useRef(null)
       const [dragging, setDragging] = useState(false)
 
+      // Re-assert React's ownership of the inline offsets after every render
+      // that can change them. While a gesture is live the pointer handler owns
+      // `left`/`top` (following the pointer through state would re-render the
+      // pill and its ticking text every frame), and React will not overwrite
+      // them later by itself: its style diff compares the previous render's
+      // values, which are unchanged when a drop lands where the state already
+      // pointed. Running before paint means the reclaim never shows.
+      //
+      // Placed after `dragging` is declared: a hook's dependency array is read
+      // during render, so naming it earlier would hit the temporal dead zone.
+      useLayoutEffect(() => {
+        const element = rootRef.current
+        if (element === null || dragging) return
+        reclaimOffsets(element, position)
+      }, [position, dragging])
+
       const onPointerDown = useCallback(
         (event) => {
           if (event.button !== 0) return
@@ -1004,11 +1094,23 @@ window.__ModuleLoader__.load({
             return
           }
           setDragging(false)
+          // Snapshot the drop position BEFORE anything reclaims the offsets: the
+          // element still holds the dragged offset, which is the truth to store.
           const own = drag.element.getBoundingClientRect()
           const pixels = { left: own.left - drag.bounds.left, top: own.top - drag.bounds.top }
           // Only `spot` is written. Sending `position` alongside it would make
           // the Host clear the spot as a corner preset — the drag would vanish.
-          commit({ spot: pixelsToSpot(pixels, { width: bounds.width, height: bounds.height }, drag.size) }).catch(() => {})
+          //
+          // `drag.bounds`, not a bare `bounds`: that name only ever existed in
+          // onPointerDown's own scope, so reading it here threw a ReferenceError
+          // before the write — every drag silently discarded itself.
+          //
+          // The imperative offsets left behind here are reclaimed by the layout
+          // effect below, on the render this state change schedules. That render
+          // already carries the new spot (the optimistic publish happens in the
+          // same synchronous run), so the pill is reclaimed straight to where it
+          // was dropped — no flash back to the old corner in between.
+          commit({ spot: pixelsToSpot(pixels, { width: drag.bounds.width, height: drag.bounds.height }, drag.size) }).catch(() => {})
         },
         [],
       )
@@ -1490,7 +1592,19 @@ window.__ModuleLoader__.load({
         return () => document.removeEventListener('keydown', onKeyDown, true)
       }, [onClose])
 
-      const anchor = panelAnchorFor(store.state, frame)
+      // The panel's real height, measured after layout. Two passes on purpose:
+      // the first render has no height to constrain against, so it uses the
+      // CSS cap as a fallback; once the box exists, `panelAnchorFor` can decide
+      // which side of the pill actually fits instead of guessing.
+      const [panelHeight, setPanelHeight] = useState(0)
+      useLayoutEffect(() => {
+        const card = cardRef.current
+        if (card === null) return
+        const height = card.offsetHeight
+        if (height > 0) setPanelHeight((previous) => (Math.abs(previous - height) < 0.5 ? previous : height))
+      })
+
+      const anchor = panelAnchorFor(store.state, frame, panelHeight)
 
       return h(
         React.Fragment,
