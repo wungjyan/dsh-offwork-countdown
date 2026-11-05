@@ -61,6 +61,13 @@
  * shift, so the clock-in has to be repeated. Switching the times back restores
  * the mark, because the fingerprint matches again.
  *
+ * A mark in the older bare-date form (`2026-11-02`) is dropped on read rather
+ * than matched loosely. Matching it loosely would mean one date matches every
+ * shift that day — exactly the bug above — and it would never stop doing so for
+ * as long as that date was "today". Dropping costs one repeat clock-in on the
+ * upgrade day; the alternative silently swallows the alert this plugin exists
+ * to give.
+ *
  * ## The reminder window
  *
  * Once a shift ends, the `due` phase does NOT stay forever: it lasts at most
@@ -481,22 +488,53 @@ window.__ModuleLoader__.load({
       return `${key}|${startTime}|${endTime}`
     }
 
+    /** The shape `shiftPrint` writes; the only mark format this Client reads. */
+    const PRINT_SHAPE = /^\d{4}-\d{2}-\d{2}\|([01]\d|2[0-3]):[0-5]\d\|([01]\d|2[0-3]):[0-5]\d$/
+
+    /**
+     * Whether a value is a mark this Client can match against a shift.
+     * @param {unknown} value - the candidate.
+     * @returns {boolean} true for a full shift print.
+     */
+    function isPrint(value) {
+      return typeof value === 'string' && PRINT_SHAPE.test(value)
+    }
+
     /**
      * Whether a stored mark belongs to one shift.
      *
-     * Accepts the older bare-date form (`2026-11-05`) as "any shift that starts
-     * that day". That format is what every install has on disk today, and
-     * refusing it would read as a lost clock-in after an upgrade. It costs
-     * nothing: the ambiguity only lasts until the next mark is written, which
-     * always writes the full form.
+     * Exact match on the full print, nothing else.
+     *
+     * The bare-date form was once accepted as "any shift that starts that day",
+     * for compatibility with marks written before the shape was stored. That
+     * rule was a mistake, and it is worth being explicit about why, because the
+     * tempting version of it will be proposed again:
+     *
+     *   - It reinstates the very bug the print exists to fix. A mark on
+     *     `2026-11-05` matches the 09:00 shift AND the 15:00 shift, so one
+     *     dismissal silences the other for the rest of the day.
+     *   - It never expires on its own. Any install that keeps such a mark on
+     *     disk stays ambiguous for as long as that date is "today", and nothing
+     *     in the UI can explain why the pill is quiet.
+     *
+     * So an old mark is simply not this shift's mark. The cost is one repeat
+     * clock-in, on the upgrade day, for a user who was mid-shift; the failure it
+     * prevents is a silently missing clock-out reminder. For a reminder whose
+     * whole purpose is that one alert, asking once too often is the cheaper way
+     * to be wrong.
+     *
+     * `host.js` still ACCEPTS the bare-date form on write. That is not
+     * compatibility for its own sake: `readState()` falls back to the defaults
+     * when validation throws, so rejecting it there would wipe every setting of
+     * a user whose file still holds one. Accepting and ignoring is the only
+     * branch that neither loses settings nor resurrects the bug.
      * @param {string | null} mark - the stored value.
      * @param {object} shift - the shift to test.
      * @returns {boolean} true when the mark names this shift.
      */
     function markMatches(mark, shift) {
       if (typeof mark !== 'string' || mark === '') return false
-      if (mark === shift.print) return true
-      return !mark.includes('|') && mark === shift.key
+      return mark === shift.print
     }
 
     /**
@@ -770,8 +808,12 @@ window.__ModuleLoader__.load({
         position: CORNERS.includes(merged.position) ? merged.position : DEFAULTS.position,
         spot: adaptSpot(merged.spot),
         enabled: merged.enabled !== false,
-        clockedInOn: typeof merged.clockedInOn === 'string' ? merged.clockedInOn : null,
-        dismissedOn: typeof merged.dismissedOn === 'string' ? merged.dismissedOn : null,
+        // Only the full print is carried into the store. A bare-date mark left by
+        // an older version is dropped here, once: nothing downstream can match
+        // it, so keeping it would leave `dismissedThisShift` reporting a
+        // dismissal that no shift owns.
+        clockedInOn: isPrint(merged.clockedInOn) ? merged.clockedInOn : null,
+        dismissedOn: isPrint(merged.dismissedOn) ? merged.dismissedOn : null,
         accentColor:
           typeof merged.accentColor === 'string' && (ACCENTS[merged.accentColor] !== undefined || /^#[0-9a-fA-F]{6}$/.test(merged.accentColor))
             ? merged.accentColor

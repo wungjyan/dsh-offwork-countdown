@@ -60,8 +60,12 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
  * `2026-11-05|09:00|18:00`. The shape is part of the identity because the marks
  * must describe one shift, not one day: changing the shift's times produces a
  * different shift, and a dismissal or clock-in earned by the old one has to stop
- * applying to it. The bare-date form is still accepted on read so an install
- * carrying marks from before this change keeps them.
+ * applying to it.
+ *
+ * The bare-date form is still ACCEPTED here but is no longer read as a match —
+ * the Client drops it. That is not compatibility for its own sake: `readState`
+ * falls back to the defaults when validation throws, so refusing the old form
+ * here would reset every setting of any user whose file still holds one.
  */
 const PRINT_PATTERN = /^\d{4}-\d{2}-\d{2}\|([01]\d|2[0-3]):([0-5]\d)\|([01]\d|2[0-3]):([0-5]\d)$/
 
