@@ -24,12 +24,12 @@ A small pill in the corner of the interface that walks a workday with you: it pr
 
 ## Install
 
-**Desktop app (DeepSeek Harness):** Plugins page → Add plugin → Install a third-party plugin (npm packages, Git repositories, and local directories) → paste the repository URL `https://github.com/wungjyan/dsh-offwork-countdown`. The Desktop profile belongs to the app and cannot be written from the CLI, so this is the only route there.
+**Desktop app (DeepSeek Harness):** Plugins page → Add plugin → Install a third-party plugin → enter the package name `dsh-offwork-countdown`. The Desktop profile belongs to the app and cannot be written from the CLI, so this is the only route there.
 
 **Command line:** `--profile` is required; replace `web` with your own profile name.
 
 ```bash
-dsh plugin --profile web add github:wungjyan/dsh-offwork-countdown
+dsh plugin --profile web add dsh-offwork-countdown
 ```
 
 Both routes go live immediately. Replacing an already-installed copy needs a Harness restart to load the new module.
