@@ -18,9 +18,15 @@
  *   due      — the shift has ended; the accent colour fills the card and the pill
  *              breathes. Shown whether or not the day was clocked in: forgetting
  *              to clock in must not cost the user the reminder that matters most.
- *   hidden   — off, a rest day, dismissed for this shift, outside the reminder
- *              window after a shift ended, or a shift that has not started yet.
- *              Draws nothing at all: an empty pause is the point.
+ *   idle     — on screen but nothing to act on: before the shift, after it, on
+ *              a rest day, or once a reminder was dismissed. A dimmed pill names
+ *              the NEXT shift relative to today («今天 09:00 上班»,
+ *              «明天 09:00 上班», «周一 09:00 上班»). It stays visible on
+ *              purpose: a widget that vanishes reads as a broken plugin, and a
+ *              bare "09:00 上班" would announce a shift that never runs at the
+ *              weekend.
+ *   hidden   — only when the user switches the pill off. This is the one case
+ *              where drawing nothing is what was asked for.
  *
  * ## Why the action button does not say 「已打卡」
  *
@@ -87,6 +93,13 @@ window.__ModuleLoader__.load({
         'delta.ms': '{m} 分 {s} 秒',
         'delta.s': '{s} 秒',
         'pill.due': '下班时间到了，记得打卡',
+        // The idle card. `{when}` is a relative day («今天»/«明天»/«周一»), so
+        // the line stays true on a rest day instead of announcing a shift that
+        // will not run.
+        'pill.idle.today': '今天 {start} 上班',
+        'pill.idle.tomorrow': '明天 {start} 上班',
+        'pill.idle.weekday': '{day} {start} 上班',
+        'pill.idle.none': '暂无排班',
         'act.clockIn': '打卡',
         'act.known': '知道了',
         'panel.title': '打卡提醒',
@@ -130,6 +143,15 @@ window.__ModuleLoader__.load({
         'day.5': '五',
         'day.6': '六',
         'day.7': '日',
+        // Full weekday names for the idle line — `day.N` is a one-glyph column
+        // header for the weekday picker and reads wrong inside a sentence.
+        'week.1': '周一',
+        'week.2': '周二',
+        'week.3': '周三',
+        'week.4': '周四',
+        'week.5': '周五',
+        'week.6': '周六',
+        'week.7': '周日',
         'pos.bottom-right': '右下角',
         'pos.bottom-left': '左下角',
         'pos.top-right': '右上角',
@@ -154,6 +176,10 @@ window.__ModuleLoader__.load({
         'delta.ms': '{m}m {s}s',
         'delta.s': '{s}s',
         'pill.due': 'Time to clock out',
+        'pill.idle.today': 'Starts today at {start}',
+        'pill.idle.tomorrow': 'Starts tomorrow at {start}',
+        'pill.idle.weekday': 'Starts {day} at {start}',
+        'pill.idle.none': 'No shift scheduled',
         'act.clockIn': 'Clock in',
         'act.known': 'Got it',
         'panel.title': 'Clock reminder',
@@ -197,6 +223,13 @@ window.__ModuleLoader__.load({
         'day.5': 'F',
         'day.6': 'S',
         'day.7': 'S',
+        'week.1': 'on Monday',
+        'week.2': 'on Tuesday',
+        'week.3': 'on Wednesday',
+        'week.4': 'on Thursday',
+        'week.5': 'on Friday',
+        'week.6': 'on Saturday',
+        'week.7': 'on Sunday',
         'pos.bottom-right': 'Bottom right',
         'pos.bottom-left': 'Bottom left',
         'pos.top-right': 'Top right',
@@ -434,6 +467,63 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The next shift that will actually run, at or after one instant.
+     *
+     * This is what an idle pill has to show. "Today at 09:00" is wrong the
+     * moment the day's shift is over — at 18:30 the next start is tomorrow's —
+     * and wrong all weekend, where it announces a shift that will never run.
+     * Only searching the calendar forward gives a time that is true.
+     *
+     * The search is bounded at eight days, a full week plus today: any
+     * non-empty `workdays` must produce a hit inside that window, so the bound
+     * only stops a pathological schedule from looping.
+     * @param {object} schedule - the settings document.
+     * @param {Date} now - the current instant.
+     * @returns {object | null} the next shift, or null when none runs at all.
+     */
+    function nextShiftAfter(schedule, now) {
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
+      for (let offset = 0; offset <= 8; offset += 1) {
+        const day = new Date(today)
+        day.setDate(day.getDate() + offset)
+        const shift = buildShift(day, schedule.startTime, schedule.endTime)
+        if (!isScheduledShift(shift, schedule.workdays)) continue
+        if (shift.start > now) return shift
+      }
+      return null
+    }
+
+    /**
+     * How many calendar days separate two instants, counting local midnights.
+     *
+     * Not `(b - a) / 86400000`: that divides real elapsed time, so a DST change
+     * between the two days yields 0.96 and floors to the wrong day.
+     * @param {Date} from - the earlier instant.
+     * @param {Date} to - the later instant.
+     * @returns {number} whole days from `from` to `to`.
+     */
+    function dayGap(from, to) {
+      const a = new Date(from.getFullYear(), from.getMonth(), from.getDate())
+      const b = new Date(to.getFullYear(), to.getMonth(), to.getDate())
+      return Math.round((b - a) / (24 * 60 * MINUTE_MS))
+    }
+
+    /**
+     * The idle card: outside a shift, but still on screen saying something true.
+     *
+     * The plugin used to render nothing here, which was wrong in a way a user
+     * reported immediately: an absent widget does not read as "you are off the
+     * clock", it reads as "this plugin is broken". A dimmed pill naming the next
+     * shift says the same thing without the doubt.
+     * @param {object} schedule - the settings document.
+     * @param {Date} now - the current instant.
+     * @returns {object} an `idle` phase carrying the next shift.
+     */
+    function idleFor(schedule, now) {
+      return { phase: 'idle', shift: nextShiftAfter(schedule, now), remaining: 0 }
+    }
+
+    /**
      * The schedule's current phase for one instant.
      *
      * Pure, so the ticking pill, the settings panel and the tests read one
@@ -461,7 +551,10 @@ window.__ModuleLoader__.load({
       // 1) A shift is running right now.
       const active = shifts.find((shift) => now >= shift.start && now < shift.end)
       if (active !== undefined) {
-        if (schedule.dismissedOn === active.key) return { phase: 'hidden', shift: active, remaining: 0 }
+        // Dismissing silences the reminder, it does not make the widget vanish:
+        // an absent pill reads as a broken plugin, so fall through to the idle
+        // card that says when the next shift starts.
+        if (schedule.dismissedOn === active.key) return idleFor(schedule, now)
         if (schedule.clockedInOn !== active.key) {
           return { phase: 'waiting', shift: active, remaining: active.end - now }
         }
@@ -479,11 +572,13 @@ window.__ModuleLoader__.load({
         .filter((shift) => now >= shift.end && now - shift.end < windowMs)
         .sort((left, right) => right.end - left.end)[0]
       if (ended !== undefined) {
-        if (schedule.dismissedOn === ended.key) return { phase: 'hidden', shift: ended, remaining: 0 }
+        if (schedule.dismissedOn === ended.key) return idleFor(schedule, now)
         return { phase: 'due', shift: ended, remaining: now - ended.end }
       }
 
-      return { phase: 'hidden', shift: null, remaining: 0 }
+      // Outside every shift: the pill still has something true to say — when the
+      // next shift starts. This is an idle state, not an absent one.
+      return idleFor(schedule, now)
     }
 
     /**
@@ -523,12 +618,28 @@ window.__ModuleLoader__.load({
      * (`09:00 上班`) to match the `working` line (`18:00 下班`) directly below it
      * in the same day — and because 「上班打卡 · 09:00」 next to a 「打卡」 button
      * said 打卡 twice in 40px.
+     * `idle` names the NEXT shift rather than today's start time. At 18:30 the
+     * next start is tomorrow's, and on a Saturday it is Monday's — printing a
+     * bare `09:00 上班` there would promise a shift that never runs. The day is
+     * therefore stated relative to `now`, which is why this needs the instant
+     * and the shift rather than only the schedule.
      * @param {string} phase - the phase name.
      * @param {object} schedule - the settings document.
      * @param {number} remaining - milliseconds until the shift ends.
+     * @param {object | null} shift - the shift this phase belongs to.
+     * @param {Date} now - the current instant.
      * @returns {{primary: string, secondary: string}} the lines to draw.
      */
-    function labelsFor(phase, schedule, remaining) {
+    function labelsFor(phase, schedule, remaining, shift, now) {
+      if (phase === 'idle') {
+        if (shift === null || shift === undefined) return { primary: t('pill.idle.none'), secondary: '' }
+        const start = schedule.startTime
+        const gap = dayGap(now, shift.start)
+        if (gap === 0) return { primary: t('pill.idle.today', { start }), secondary: '' }
+        if (gap === 1) return { primary: t('pill.idle.tomorrow', { start }), secondary: '' }
+        const weekday = isoWeekday(shift.start)
+        return { primary: t('pill.idle.weekday', { day: t(`week.${weekday}`), start }), secondary: '' }
+      }
       if (phase === 'waiting') {
         return { primary: t('pill.waiting', { start: schedule.startTime }), secondary: '' }
       }
@@ -946,8 +1057,8 @@ window.__ModuleLoader__.load({
       const phase = derived.phase
       const accent = useMemo(() => resolveAccent(schedule.accentColor, dark), [schedule.accentColor, dark])
       const labels = useMemo(
-        () => labelsFor(phase, schedule, derived.remaining),
-        [phase, schedule, derived.remaining],
+        () => labelsFor(phase, schedule, derived.remaining, derived.shift, now),
+        [phase, schedule, derived.remaining, derived.shift, now],
       )
 
       // The transition into "due" gets one shake burst on top of the steady
@@ -1149,13 +1260,10 @@ window.__ModuleLoader__.load({
         '--dsh-offwork-pulse': `${schedule.pulseSeconds}s`,
       }
 
-      // `hidden` renders nothing at all. It used to leave a 30px dot behind so
-      // the settings stayed reachable from the pill, but that dot could not be
-      // told apart from a status indicator, it sat at 1.11:1 contrast, and it
-      // covered four different situations at once — switched off, rest day,
-      // dismissed, and "the shift has not started yet". Only the last one is a
-      // state the user did not ask for, and the honest answer there is silence:
-      // the settings live on the plugin page, which does not depend on the pill.
+      // Only an explicit opt-out removes the pill. Every other reason the pill
+      // used to disappear — before the shift, after it, a rest day, a dismissed
+      // reminder — now renders as the dimmed `idle` card instead: a widget that
+      // vanishes reads as a broken plugin, not as "you are off the clock".
       const collapsed = phase === 'hidden'
       const pillClass = [
         'dsh-offwork-pill',
@@ -1334,7 +1442,12 @@ window.__ModuleLoader__.load({
 
       const showLoadError = store.status === 'failed' && store.error !== null && lastError === null
       const derived = derivePhase(schedule, new Date())
-      const dismissedThisShift = derived.shift !== null && schedule.dismissedOn === derived.shift.key
+      // A dismissal is never undone by comparing against `derived.shift`: in the
+      // `idle` phase that shift is the NEXT one, while `dismissedOn` holds the
+      // key of the shift that was dismissed — so the two can never match and the
+      // escape hatch disappeared exactly when it was needed. The mark itself is
+      // the whole answer.
+      const dismissedThisShift = schedule.dismissedOn !== null
       const overnight = minutesOf(schedule.startTime) >= minutesOf(schedule.endTime)
       const customActive = ACCENTS[schedule.accentColor] === undefined
 
@@ -1756,6 +1869,22 @@ window.__ModuleLoader__.load({
    is not shown. Being absolutely positioned is what gives it an offsetParent —
    the measurement walks up to the overlay layer from here. */
 .dsh-offwork-ghost{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none}
+
+/* ---- idle: on screen, but there is nothing to act on --------------------- */
+/* Quiet must not mean illegible. Measured: --dsw-alias-label-secondary is
+   4.90:1 in light and 3.85:1 in dark against this surface, and any opacity on
+   top of that drops it below the 4.5:1 a 13px label needs — at .72 it measured
+   2.88:1, which is exactly the fault the old 30px dot had at 1.11:1. So the
+   text keeps full opacity and the state is carried by the ABSENT action button,
+   the muted dot and the flatter shadow instead of by fading the type.
+
+   Dark mode is the tighter of the two at 3.85:1; label-primary is the fallback
+   there so the line still clears the threshold in both themes. */
+.dsh-offwork-idle{box-shadow:0 4px 14px rgba(0,0,0,.10)}
+.dsh-offwork-idle .dsh-offwork-line{font-size:13px;color:var(--dsw-alias-label-primary);font-weight:400}
+.dsh-offwork-idle .dsh-offwork-dot{background:var(--dsw-alias-label-secondary)}
+/* It is still draggable and still opens the settings, so the cursor keeps saying
+   so; only the border and the dot are muted. */
 
 /* ---- waiting: the shift started, today's clock-in is not marked ---------- */
 .dsh-offwork-waiting{border-color:var(--dsw-alias-state-warn-primary)}
