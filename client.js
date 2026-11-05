@@ -18,8 +18,9 @@
  *   due      — the shift has ended; the accent colour fills the card and the pill
  *              breathes. Shown whether or not the day was clocked in: forgetting
  *              to clock in must not cost the user the reminder that matters most.
- *   hidden   — off, a rest day, dismissed for this shift, or outside the reminder
- *              window after a shift ended.
+ *   hidden   — off, a rest day, dismissed for this shift, outside the reminder
+ *              window after a shift ended, or a shift that has not started yet.
+ *              Draws nothing at all: an empty pause is the point.
  *
  * ## Why the action button does not say 「已打卡」
  *
@@ -904,8 +905,7 @@ window.__ModuleLoader__.load({
     // ---- the pill -----------------------------------------------------------
 
     /**
-     * The floating pill, or the dim dot that stands in for it when the pill has
-     * nothing to say.
+     * The floating pill, or nothing at all when it has nothing to say.
      *
      * Every clickable part is a real `<button>`: it must be reachable and
      * operable from the keyboard. The changing text is outside a live region —
@@ -1149,6 +1149,13 @@ window.__ModuleLoader__.load({
         '--dsh-offwork-pulse': `${schedule.pulseSeconds}s`,
       }
 
+      // `hidden` renders nothing at all. It used to leave a 30px dot behind so
+      // the settings stayed reachable from the pill, but that dot could not be
+      // told apart from a status indicator, it sat at 1.11:1 contrast, and it
+      // covered four different situations at once — switched off, rest day,
+      // dismissed, and "the shift has not started yet". Only the last one is a
+      // state the user did not ask for, and the honest answer there is silence:
+      // the settings live on the plugin page, which does not depend on the pill.
       const collapsed = phase === 'hidden'
       const pillClass = [
         'dsh-offwork-pill',
@@ -1165,22 +1172,7 @@ window.__ModuleLoader__.load({
         // Only the phase's statement is announced, never the ticking number.
         h('span', { className: 'dsh-offwork-srOnly', role: 'status' }, labels.primary),
         collapsed
-          ? h(
-              'button',
-              {
-                type: 'button',
-                className: dragging ? 'dsh-offwork-launcher dsh-offwork-grabbing' : 'dsh-offwork-launcher',
-                style: position,
-                onClick: openPanel,
-                onPointerDown,
-                onPointerMove,
-                onPointerUp: endDrag,
-                onPointerCancel: endDrag,
-                title: t('open'),
-                'aria-label': t('open'),
-              },
-              h('span', { className: 'dsh-offwork-launcherDot' }),
-            )
+          ? h('span', { className: 'dsh-offwork-ghost', ref: rootRef })
           : h(
               'div',
               {
@@ -1562,8 +1554,9 @@ window.__ModuleLoader__.load({
           // infer from the controls, so it is stated once.
           h('div', { className: 'dsh-offwork-hint' }, t('panel.clockInHint')),
 
-          // A dismissed shift is the one state with no way back from the pill,
-          // which has collapsed by then.
+          // A dismissed shift draws nothing at all, so this is the only way back
+          // — and it is reachable from the plugin page, which never depends on
+          // the pill being on screen.
           dismissedThisShift
             ? h(
                 'div',
@@ -1754,16 +1747,15 @@ window.__ModuleLoader__.load({
 /* Grab affordances: the pill is draggable, so the cursor says so and a drag in
    progress drops the transition that would otherwise lag behind the pointer. */
 .dsh-offwork-pill{cursor:grab;touch-action:none;user-select:none}
-.dsh-offwork-launcher{cursor:grab;touch-action:none}
 .dsh-offwork-grabbing{cursor:grabbing;transition:none;box-shadow:0 10px 30px rgba(0,0,0,.28);z-index:33}
 .dsh-offwork-grabbing *{cursor:grabbing}
 /* While dragging, buttons inside must not swallow the gesture. */
 .dsh-offwork-grabbing .dsh-offwork-copy,.dsh-offwork-grabbing .dsh-offwork-action,.dsh-offwork-grabbing .dsh-offwork-gear{pointer-events:none}
 
-.dsh-offwork-launcher{position:absolute;z-index:30;display:grid;place-items:center;width:30px;height:30px;padding:0;border-radius:50%;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay);box-shadow:0 3px 12px rgba(0,0,0,.12);cursor:grab;pointer-events:auto;opacity:.5;transition:opacity 160ms ease}
-.dsh-offwork-launcher:hover,.dsh-offwork-launcher:focus-visible{opacity:1}
-.dsh-offwork-launcher:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
-.dsh-offwork-launcherDot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-idle-primary)}
+/* A zero-size box that exists only so the frame can be measured while the pill
+   is not shown. Being absolutely positioned is what gives it an offsetParent —
+   the measurement walks up to the overlay layer from here. */
+.dsh-offwork-ghost{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none}
 
 /* ---- waiting: the shift started, today's clock-in is not marked ---------- */
 .dsh-offwork-waiting{border-color:var(--dsw-alias-state-warn-primary)}

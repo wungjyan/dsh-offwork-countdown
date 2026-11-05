@@ -23,6 +23,7 @@ A small pill in the corner of the interface that walks a workday with you: it pr
 - **Clock-out reminder** — the whole card fills with your accent colour, breathes and shakes, and a "Got it" button dismisses it for the day.
   - Shown whether or not you clocked in: forgetting to clock in must not cost you the one reminder that matters most.
 - **Reminder window** — the reminder lasts a bounded time (4 hours by default), then goes quiet, so an 18:00 finish does not nag you at midnight.
+- **Nothing when there is nothing to say** — outside a shift (before it starts, on a rest day, after "Got it", or with the pill switched off) it draws **nothing at all**. It never occupies space or asks for attention; settings live on the Plugins page.
 - **Night shifts** — a start time later than the end time is a shift that crosses midnight. At 01:00 the pill correctly recognises the shift that began at 22:00 the evening before.
 - **Custom colours** — nine presets plus any colour you pick, with light/dark fills chosen automatically and the text colour derived for contrast.
 - **Free dragging** — drag the pill anywhere and it stays there. The position survives a window resize instead of drifting off-screen.
