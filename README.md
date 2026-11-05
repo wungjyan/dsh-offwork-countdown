@@ -24,12 +24,12 @@
 
 ## 安装
 
-**桌面版（DeepSeek Harness App）**：设置 → 插件 → 搜索 `dsh-offwork-countdown` → 安装。桌面版的 profile 由 App 独占管理，命令行装不进去，只能走这条。
+**桌面版（DeepSeek Harness App）**：插件页 → 安装第三方插件 → 把仓库地址 `https://github.com/wungjyan/dsh-offwork-countdown` 填进去。桌面版的 profile 由 App 独占管理，命令行装不进去，只能走这条。
 
 **命令行**：`--profile` 是必填的，换成你自己的 profile 名（常见是 `web`）。
 
 ```bash
-dsh plugin --profile web add dsh-offwork-countdown
+dsh plugin --profile web add github:wungjyan/dsh-offwork-countdown
 ```
 
 两种方式都是装完立即生效；替换已安装的同名包需要重启 Harness 才加载新代码。
