@@ -54,6 +54,26 @@ const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/
 /** `YYYY-MM-DD`, the shift-start calendar day a mark belongs to. */
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
+/**
+ * A per-shift mark: the start day plus the shift's own shape.
+ *
+ * `2026-11-05|09:00|18:00`. The shape is part of the identity because the marks
+ * must describe one shift, not one day: changing the shift's times produces a
+ * different shift, and a dismissal or clock-in earned by the old one has to stop
+ * applying to it. The bare-date form is still accepted on read so an install
+ * carrying marks from before this change keeps them.
+ */
+const PRINT_PATTERN = /^\d{4}-\d{2}-\d{2}\|([01]\d|2[0-3]):([0-5]\d)\|([01]\d|2[0-3]):([0-5]\d)$/
+
+/**
+ * Whether a mark value is one this plugin wrote.
+ * @param {string} value - the candidate.
+ * @returns {boolean} true for a bare date or a full shift print.
+ */
+function isMark(value) {
+  return DATE_PATTERN.test(value) || PRINT_PATTERN.test(value)
+}
+
 /** `#rrggbb`, the one custom colour format the panel's picker emits. */
 const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/
 
@@ -335,14 +355,14 @@ function mergeState(current, patch) {
   // so any well-formed date is accepted — the client decides whether it matches
   // the shift on screen.
   if (patch.clockedInOn !== undefined) {
-    if (patch.clockedInOn !== null && (typeof patch.clockedInOn !== 'string' || !DATE_PATTERN.test(patch.clockedInOn))) {
-      throw new StateRefusal(400, 'invalid-clocked-in', 'clockedInOn must be null or a YYYY-MM-DD string')
+    if (patch.clockedInOn !== null && (typeof patch.clockedInOn !== 'string' || !isMark(patch.clockedInOn))) {
+      throw new StateRefusal(400, 'invalid-clocked-in', 'clockedInOn must be null, YYYY-MM-DD, or YYYY-MM-DD|HH:MM|HH:MM')
     }
     next.clockedInOn = patch.clockedInOn
   }
   if (patch.dismissedOn !== undefined) {
-    if (patch.dismissedOn !== null && (typeof patch.dismissedOn !== 'string' || !DATE_PATTERN.test(patch.dismissedOn))) {
-      throw new StateRefusal(400, 'invalid-dismissed', 'dismissedOn must be null or a YYYY-MM-DD string')
+    if (patch.dismissedOn !== null && (typeof patch.dismissedOn !== 'string' || !isMark(patch.dismissedOn))) {
+      throw new StateRefusal(400, 'invalid-dismissed', 'dismissedOn must be null, YYYY-MM-DD, or YYYY-MM-DD|HH:MM|HH:MM')
     }
     next.dismissedOn = patch.dismissedOn
   }

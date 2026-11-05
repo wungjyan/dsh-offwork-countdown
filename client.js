@@ -49,10 +49,17 @@
  * it ends on the following calendar day. Nothing else differs: the phase maths
  * runs over the same interval either way.
  *
- * That identity — the shift's start date — is also what the per-day marks store
- * (`clockedInOn`, `dismissedOn`). A night shift beginning 22:00 Monday keeps the
- * key `2026-11-02` even while it runs at 01:00 Tuesday, so marks never leak
- * between shifts.
+ * A shift's identity is its start day PLUS its shape — `2026-11-02|22:00|06:00` —
+ * and that is exactly what the marks (`clockedInOn`, `dismissedOn`) store. The
+ * start date alone is not enough: changing 09:00-18:00 to 15:00-18:00 and back
+ * produces three different shifts on one calendar day, and a mark has to describe
+ * one of them. Against the date alone, a dismissal earned by the 15:00 shift
+ * silenced the 09:00 shift for the rest of the day — which is the bug this
+ * fingerprint format exists to prevent.
+ *
+ * The consequence is deliberate: editing the shift's times makes it a different
+ * shift, so the clock-in has to be repeated. Switching the times back restores
+ * the mark, because the fingerprint matches again.
  *
  * ## The reminder window
  *
@@ -445,7 +452,13 @@ window.__ModuleLoader__.load({
      * @param {Date} day - any instant within the start day (only Y/M/D is used).
      * @param {string} startTime - `HH:MM`.
      * @param {string} endTime - `HH:MM`.
-     * @returns {{start: Date, end: Date, key: string}} the shift.
+     * `key` is the calendar day the shift starts; `print` adds the shift's own
+     * shape. The marks (`clockedInOn`, `dismissedOn`) are stored against `print`,
+     * not `key`: a mark must describe ONE shift. Against the date alone, changing
+     * 09:00-18:00 to 15:00-18:00 and back would carry the old marks onto what is
+     * really a different shift, and a dismissal earned by the 15:00 shift would
+     * silence the 09:00 one for the rest of the day.
+     * @returns {{start: Date, end: Date, key: string, print: string}} the shift.
      */
     function buildShift(day, startTime, endTime) {
       const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0, 0)
@@ -453,7 +466,37 @@ window.__ModuleLoader__.load({
       const end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0, 0)
       end.setMinutes(minutesOf(endTime))
       if (minutesOf(startTime) >= minutesOf(endTime)) end.setDate(end.getDate() + 1)
-      return { start, end, key: localDateKey(start) }
+      const key = localDateKey(start)
+      return { start, end, key, print: shiftPrint(key, startTime, endTime) }
+    }
+
+    /**
+     * The identity of one shift: its start day plus its shape.
+     * @param {string} key - the shift-start calendar day.
+     * @param {string} startTime - `HH:MM`.
+     * @param {string} endTime - `HH:MM`.
+     * @returns {string} the mark to store, e.g. `2026-11-05|09:00|18:00`.
+     */
+    function shiftPrint(key, startTime, endTime) {
+      return `${key}|${startTime}|${endTime}`
+    }
+
+    /**
+     * Whether a stored mark belongs to one shift.
+     *
+     * Accepts the older bare-date form (`2026-11-05`) as "any shift that starts
+     * that day". That format is what every install has on disk today, and
+     * refusing it would read as a lost clock-in after an upgrade. It costs
+     * nothing: the ambiguity only lasts until the next mark is written, which
+     * always writes the full form.
+     * @param {string | null} mark - the stored value.
+     * @param {object} shift - the shift to test.
+     * @returns {boolean} true when the mark names this shift.
+     */
+    function markMatches(mark, shift) {
+      if (typeof mark !== 'string' || mark === '') return false
+      if (mark === shift.print) return true
+      return !mark.includes('|') && mark === shift.key
     }
 
     /**
@@ -554,8 +597,8 @@ window.__ModuleLoader__.load({
         // Dismissing silences the reminder, it does not make the widget vanish:
         // an absent pill reads as a broken plugin, so fall through to the idle
         // card that says when the next shift starts.
-        if (schedule.dismissedOn === active.key) return idleFor(schedule, now)
-        if (schedule.clockedInOn !== active.key) {
+        if (markMatches(schedule.dismissedOn, active)) return idleFor(schedule, now)
+        if (!markMatches(schedule.clockedInOn, active)) {
           return { phase: 'waiting', shift: active, remaining: active.end - now }
         }
         const remaining = active.end - now
@@ -572,7 +615,7 @@ window.__ModuleLoader__.load({
         .filter((shift) => now >= shift.end && now - shift.end < windowMs)
         .sort((left, right) => right.end - left.end)[0]
       if (ended !== undefined) {
-        if (schedule.dismissedOn === ended.key) return idleFor(schedule, now)
+        if (markMatches(schedule.dismissedOn, ended)) return idleFor(schedule, now)
         return { phase: 'due', shift: ended, remaining: now - ended.end }
       }
 
@@ -1243,12 +1286,12 @@ window.__ModuleLoader__.load({
 
       const clockIn = useCallback(() => {
         const current = derivePhase(snapshot.state, new Date())
-        if (current.shift !== null) commit({ clockedInOn: current.shift.key }).catch(() => {})
+        if (current.shift !== null) commit({ clockedInOn: current.shift.print }).catch(() => {})
       }, [])
 
       const acknowledge = useCallback(() => {
         const current = derivePhase(snapshot.state, new Date())
-        if (current.shift !== null) commit({ dismissedOn: current.shift.key }).catch(() => {})
+        if (current.shift !== null) commit({ dismissedOn: current.shift.print }).catch(() => {})
       }, [])
 
       // The accent drives the card through a CSS custom property rather than

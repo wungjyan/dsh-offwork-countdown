@@ -20,7 +20,7 @@ A small pill in the corner of the interface that walks a workday with you: it pr
 
 ## Features
 
-- **Clock in** — at your shift's start time the pill shows a "Clock in" button, which is itself the reminder to do it. One click covers the whole day; a refresh or restart remembers it.
+- **Clock in** — at your shift's start time the pill shows a "Clock in" button, which is itself the reminder to do it. One click covers the whole day; a refresh or restart remembers it. Changing the shift's times makes it a different shift, so it asks again.
   - The button names the **action** (Clock in), not the state (Clocked in) — it is asking you to press it, not reporting.
 - **Countdown** — after clocking in it counts down quietly in the corner.
 - **Heads-up** — inside the lead window (15 minutes by default) the border and the countdown switch to a warning colour.
