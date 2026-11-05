@@ -11,7 +11,7 @@
  * The phases a shift walks through:
  *
  *   waiting  — the shift has started but today's clock-in has not been marked.
- *              The pill shows the start time and a 「已打卡」 button, which is
+ *              The pill shows the start time and a 「打卡」 button, which is
  *              itself the reminder to clock in.
  *   working  — clocked in, before the heads-up window; quiet, theme-token colours
  *   soon     — inside the heads-up window (default 15 min); warn accent
@@ -20,6 +20,20 @@
  *              to clock in must not cost the user the reminder that matters most.
  *   hidden   — off, a rest day, dismissed for this shift, or outside the reminder
  *              window after a shift ended.
+ *
+ * ## Why the action button does not say 「已打卡」
+ *
+ * It said that once, and a colleague read it as a status readout rather than a
+ * control — the pill sat there announcing a state that had not happened yet. Two
+ * things made it read that way, and both are fixed:
+ *
+ *   - The label was past tense. 「已打卡」 states a completed fact; 「打卡」 is the
+ *     action, and the word DingTalk and every other Chinese time clock puts on
+ *     the button you press.
+ *   - The shape was a capsule (`border-radius:999px`) — which is this product's
+ *     *status tag* shape (`.pill` in the app shell), not its button shape. Real
+ *     buttons here use `--dsw-radius-sm` (8px). A round chip inside a round pill
+ *     reads as decoration; a rounded rectangle reads as something to press.
  *
  * ## The shift model (this is what makes night shifts work)
  *
@@ -64,7 +78,7 @@ window.__ModuleLoader__.load({
     /** Copy for both locales. The Host never reads these; they are the page's. */
     const DICT = {
       zh: {
-        'pill.waiting': '上班打卡 · {start}',
+        'pill.waiting': '{start} 上班',
         'pill.endAt': '{time} 下班',
         'pill.soon': '快下班了 · {time}',
         'pill.remaining': '还有 {delta}',
@@ -72,8 +86,7 @@ window.__ModuleLoader__.load({
         'delta.ms': '{m} 分 {s} 秒',
         'delta.s': '{s} 秒',
         'pill.due': '下班时间到了，记得打卡',
-        'act.clockIn': '已打卡',
-        'act.clockedIn': '已打卡 ✓',
+        'act.clockIn': '打卡',
         'act.known': '知道了',
         'panel.title': '打卡提醒',
         'panel.subtitle': '到点后浮窗会变色并轻轻呼吸，提醒你打卡。',
@@ -108,7 +121,7 @@ window.__ModuleLoader__.load({
         'panel.hint': '设置保存在本机，重启后仍然有效。',
         'panel.daysRequired': '至少保留一天。',
         'panel.shiftInvalid': '上班和下班时间不能相同。',
-        'panel.clockInHint': '每天点一次「已打卡」，浮窗才开始显示下班倒计时。',
+        'panel.clockInHint': '每天点一次「打卡」，浮窗才开始显示下班倒计时。',
         'day.1': '一',
         'day.2': '二',
         'day.3': '三',
@@ -132,7 +145,7 @@ window.__ModuleLoader__.load({
         'color.slate': '深灰',
       },
       en: {
-        'pill.waiting': 'Clock in · {start}',
+        'pill.waiting': 'Starts at {start}',
         'pill.endAt': 'Off at {time}',
         'pill.soon': 'Off soon · {time}',
         'pill.remaining': '{delta} left',
@@ -141,7 +154,6 @@ window.__ModuleLoader__.load({
         'delta.s': '{s}s',
         'pill.due': 'Time to clock out',
         'act.clockIn': 'Clock in',
-        'act.clockedIn': 'Clocked in ✓',
         'act.known': 'Got it',
         'panel.title': 'Clock reminder',
         'panel.subtitle': 'When the time comes the pill fills with colour and breathes, so you do not forget to clock out.',
@@ -506,7 +518,10 @@ window.__ModuleLoader__.load({
      *
      * `waiting` carries no countdown on purpose: the shift end is not what is
      * being counted down before the clock-in happens, and a number there read as
-     * if the day had already started.
+     * if the day had already started. Its top line puts the time first
+     * (`09:00 上班`) to match the `working` line (`18:00 下班`) directly below it
+     * in the same day — and because 「上班打卡 · 09:00」 next to a 「打卡」 button
+     * said 打卡 twice in 40px.
      * @param {string} phase - the phase name.
      * @param {object} schedule - the settings document.
      * @param {number} remaining - milliseconds until the shift ends.
@@ -1729,7 +1744,7 @@ window.__ModuleLoader__.load({
 .dsh-offwork-copy:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px;border-radius:6px}
 .dsh-offwork-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;line-height:17px}
 .dsh-offwork-clock{font-variant-numeric:tabular-nums;font-size:12px;line-height:15px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
-.dsh-offwork-action{flex:none;height:28px;margin:0 6px 0 2px;padding:0 12px;border:0;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer;white-space:nowrap;transition:background 160ms ease}
+.dsh-offwork-action{flex:none;height:28px;margin:0 6px 0 2px;padding:0 12px;border:0;border-radius:var(--dsw-radius-sm, 8px);background:var(--dsw-alias-bg-layer-2);font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer;white-space:nowrap;transition:background 160ms ease}
 .dsh-offwork-action:hover{background:var(--dsw-alias-border-l2)}
 .dsh-offwork-action:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
 .dsh-offwork-gear{flex:none;width:32px;height:32px;margin-right:8px;padding:0;border:0;border-radius:50%;background:none;font-size:15px;line-height:1;color:var(--dsw-alias-label-secondary);cursor:pointer}
