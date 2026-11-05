@@ -6,8 +6,13 @@
 
 A small pill in the corner of the interface that walks a workday with you: it prompts you to clock in when your shift starts, counts down quietly, turns amber as the end approaches, and fills with colour, breathes and shakes when it is time to leave.
 
-<!-- Suggest a screenshot here: img/screenshot.png -->
-<!-- ![Screenshot](img/screenshot.png) -->
+| Clock in | Countdown |
+| :---: | :---: |
+| ![Clock-in reminder](img/state-waiting.png) | ![Countdown](img/state-working.png) |
+
+| Heads-up | Time to leave |
+| :---: | :---: |
+| ![End of shift approaching](img/state-soon.png) | ![Clock-out reminder](img/state-due.png) |
 
 ## Features
 
