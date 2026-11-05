@@ -24,14 +24,15 @@
 
 ## 安装
 
+**桌面版（DeepSeek Harness App）**：设置 → 插件 → 搜索 `dsh-offwork-countdown` → 安装。桌面版的 profile 由 App 独占管理，命令行装不进去，只能走这条。
+
+**命令行**：`--profile` 是必填的，换成你自己的 profile 名（常见是 `web`）。
+
 ```bash
-git clone <这个仓库的地址>
-dsh plugin add ./offwork-countdown
+dsh plugin --profile web add dsh-offwork-countdown
 ```
 
-安装后立即生效；替换已安装的同名包需要重启 Harness 才加载新代码。
-
-也可以让 Harness 里的模型用 `plugin_manager` 安装，指向克隆下来的目录。
+两种方式都是装完立即生效；替换已安装的同名包需要重启 Harness 才加载新代码。
 
 ## 使用
 

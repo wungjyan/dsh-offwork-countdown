@@ -5,6 +5,17 @@
   "type": "module",
   "license": "MIT",
   "author": "wungjyan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wungjyan/dsh-offwork-countdown.git"
+  },
+  "homepage": "https://github.com/wungjyan/dsh-offwork-countdown#readme",
+  "bugs": {
+    "url": "https://github.com/wungjyan/dsh-offwork-countdown/issues"
+  },
+  "engines": {
+    "dsh": ">=0.1.7-0"
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -17,7 +28,8 @@
     ".": "./host.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "files": [
     "host.js",
