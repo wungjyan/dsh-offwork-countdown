@@ -1849,17 +1849,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The settings section on this plugin's own detail page.
+     * The settings of this plugin, on its own page in **Plugins**.
      *
-     * The detail page renders one contribution per plugin and asks each to draw
-     * its own chrome, returning null for a subject it has nothing for — so the
-     * first thing here is the subject check. It accepts both forms the page uses
-     * for this plugin: its bundle page and its single row.
-     * @param {{subject: object}} props - the page's subject.
-     * @returns {object | null} the section, or null for another plugin's page.
+     * Registered into `plugins.bundle.config`, the slot the page keeps for "a
+     * bundle's own configuration", NOT into `plugins.detail.section`. The
+     * difference is where the reader finds it, and the page's own order is what
+     * decides that:
+     *
+     *   detail document (`meta.detail` or README)  ← the plugin's long
+     *   configuration (this form)                     description, which the
+     *   component rows                                page draws from the
+     *   versions / source                             package's own files
+     *
+     * `plugins.detail.section` sits at the very BOTTOM of that list, after the
+     * README, the component rows, the version list and the install source. A
+     * settings form there is a form nobody scrolls to: the page spends the
+     * whole viewport on documentation first, and the install facts a reader
+     * needs once crowd the same space. `plugins.bundle.config` is dispatched
+     * directly under the title and above the README, so the controls are the
+     * first thing on the page and the documentation stays below as reference.
+     *
+     * Registering nothing at all is not an option: the README is drawn by the
+     * page itself from the package's files, so it appears whether or not this
+     * plugin contributes a section. The only way to put the form above it is
+     * the earlier slot.
+     *
+     * The page asks a `plugins.bundle.config` entry for `view: 'page'` on the
+     * bundle's page and `view: 'summary'` where a one-liner is wanted; this
+     * plugin has no one-liner to offer, so `summary` renders nothing.
+     * @param {{view?: string}} props - the page's requested view.
+     * @returns {object | null} the form, or null for the summary view.
      */
-    function DetailSection({ subject }) {
-      if (!isOwnSubject(subject)) return null
+    function BundleConfig({ view }) {
+      if (view === 'summary') return null
       return h(
         React.Fragment,
         null,
@@ -1880,22 +1902,6 @@ window.__ModuleLoader__.load({
           h(SettingsForm),
         ),
       )
-    }
-
-    /**
-     * Whether a detail page is about this plugin.
-     *
-     * `subject.pkg.name` is the npm package name for both the bundle page and a
-     * row page; an `item` subject belongs to the official catalogue instead and
-     * is never this package.
-     * @param {object} subject - the page's subject.
-     * @returns {boolean} true when the form belongs here.
-     */
-    function isOwnSubject(subject) {
-      if (subject === null || typeof subject !== 'object') return false
-      if (subject.kind !== 'bundle' && subject.kind !== 'row') return false
-      const name = subject.pkg?.name ?? subject.packageName ?? subject.name
-      return name === PACKAGE_NAME
     }
 
     /**
@@ -2075,12 +2081,15 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('shell.overlay', () =>
           ctx.slots.register({ name: 'shell.overlay', id: 'dsh-offwork-countdown', order: 40, locale: NS }, Pill),
         )
-        // The same form also lives on this plugin's detail page, which is where
-        // someone looking for its settings goes first. Both homes render the one
-        // SettingsForm, so the two can never drift apart.
-        ctx.slots.inject('plugins.detail.section', () =>
-          ctx.slots.register({ name: 'plugins.detail.section', id: 'dsh-offwork-countdown', order: 60, locale: NS },
-            DetailSection),
+        // The settings live here rather than in `plugins.detail.section`: the
+        // page draws its own README above that slot, so a form registered there
+        // is only reachable after scrolling past the whole long description.
+        // `plugins.bundle.config` is rendered directly under the title, above
+        // the README, which is where someone opening this page wants the
+        // controls. See `BundleConfig`.
+        ctx.slots.inject('plugins.bundle.config', () =>
+          ctx.slots.register({ name: 'plugins.bundle.config', key: PACKAGE_NAME, locale: NS },
+            BundleConfig),
         )
       },
     }

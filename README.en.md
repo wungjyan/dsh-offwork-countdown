@@ -31,7 +31,7 @@ A small pill in the corner of the interface that walks a workday with you: it pr
 - **Night shifts** — a start time later than the end time is a shift that crosses midnight. At 01:00 the pill correctly recognises the shift that began at 22:00 the evening before.
 - **Custom colours** — nine presets plus any colour you pick, with light/dark fills chosen automatically and the text colour derived for contrast.
 - **Free dragging** — drag the pill anywhere and it stays there. The position survives a window resize instead of drifting off-screen.
-- **Two places to configure** — the gear beside the pill, or this plugin's page under Plugins. Either one opens the same form.
+- **Two places to configure** — the gear beside the pill, or this plugin's page under Plugins (the form sits directly under the title). Either one opens the same form.
 
 ## Install
 
