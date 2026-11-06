@@ -149,6 +149,9 @@ window.__ModuleLoader__.load({
         'panel.failed': '保存失败：{message}',
         'panel.loadFailed': '读取设置失败，先按默认值显示。',
         'panel.retry': '重试',
+        'panel.dismissedLabel': '下班提醒',
+        'panel.undoDismiss': '重新显示',
+        'panel.dismissedHint': '今天点过「知道了」，提醒已关掉。点「重新显示」可以撤销，让浮窗恢复提醒。',
         'panel.hint': '设置保存在本机，重启后仍然有效。',
         'panel.daysRequired': '至少保留一天。',
         'panel.shiftInvalid': '上班和下班时间不能相同。',
@@ -232,6 +235,9 @@ window.__ModuleLoader__.load({
         'panel.failed': 'Could not save: {message}',
         'panel.loadFailed': 'Could not read the settings; showing defaults.',
         'panel.retry': 'Retry',
+        'panel.dismissedLabel': 'This shift',
+        'panel.undoDismiss': 'Show again',
+        'panel.dismissedHint': 'You pressed Got it today, so this shift is quiet. Show again undoes that.',
         'panel.hint': 'Stored on this machine, so it survives a restart.',
         'panel.daysRequired': 'Keep at least one day.',
         'panel.shiftInvalid': 'Start and end times must differ.',
@@ -713,6 +719,49 @@ window.__ModuleLoader__.load({
       // The date a print belongs to is its first field; a bare-date mark left by
       // an older version has been dropped to null long before this runs.
       return schedule.clockedInOn.split('|')[0] === current.key
+    }
+
+    /**
+     * Whether the dismissal on file belongs to the shift in view right now.
+     *
+     * The settings card offers a way to take a 「知道了」 back, and that row is
+     * only truthful while the dismissal it undoes is still the one in effect.
+     * `dismissedOn !== null` is not the same question: the mark survives the
+     * day it was made, so on the next working morning a stale one would make
+     * the card claim today is already acknowledged while the pill is happily
+     * counting down. A stale mark cannot be "undone" either — the reminder it
+     * silenced is already history, and today's reminder was never silenced.
+     *
+     * The live shift is the same one `derivePhase` looks at: a night shift
+     * still running after midnight belongs to yesterday's date, and a shift
+     * that has just ended is still today's shift while its reminder window is
+     * open — that is exactly when `due` is on screen and the row matters.
+     * @param {object} schedule - the settings document.
+     * @param {Date} now - the current instant.
+     * @returns {boolean} true when `dismissedOn` names the shift in view.
+     */
+    function dismissalIsCurrent(schedule, now) {
+      if (schedule.dismissedOn === null) return false
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
+      const shifts = []
+      // Yesterday covers a night shift still running this morning, today covers
+      // the ordinary case — the same two days `derivePhase` builds.
+      for (const offset of [-1, 0]) {
+        const day = new Date(today)
+        day.setDate(day.getDate() + offset)
+        const shift = buildShift(day, schedule.startTime, schedule.endTime)
+        if (isScheduledShift(shift, schedule.workdays)) shifts.push(shift)
+      }
+      const windowMs = schedule.remindWindowMinutes * MINUTE_MS
+      return shifts.some(
+        (shift) =>
+          markMatches(schedule.dismissedOn, shift) &&
+          // A dismissed shift is `idle` to the pill, so it counts as current
+          // from its start until the reminder window closes, not only while it
+          // happens to be running.
+          now >= shift.start &&
+          now - shift.end < windowMs,
+      )
     }
 
     /**
@@ -1619,7 +1668,7 @@ window.__ModuleLoader__.load({
       // key of the shift that was dismissed — so the two can never match and the
       // escape hatch disappeared exactly when it was needed. The mark itself is
       // the whole answer.
-      const dismissedThisShift = schedule.dismissedOn !== null
+      const dismissedThisShift = dismissalIsCurrent(schedule, new Date())
       const overnight = minutesOf(schedule.startTime) >= minutesOf(schedule.endTime)
       const customActive = ACCENTS[schedule.accentColor] === undefined
       // Editing either time is what drops the mark, so the warning belongs
@@ -1859,19 +1908,28 @@ window.__ModuleLoader__.load({
           // infer from the controls, so it is stated once.
           h('div', { className: 'dsh-offwork-hint' }, t('panel.clockInHint')),
 
-          // A dismissed shift draws nothing at all, so this is the only way back
-          // — and it is reachable from the plugin page, which never depends on
-          // the pill being on screen.
+          // Once 「知道了」 is pressed the pill stops offering it for the rest of
+          // the shift, so this row is the only way back — and it is reachable
+          // from the plugin page, which never depends on the pill being on
+          // screen. It has to explain itself: "undo" on its own names an action
+          // nobody was looking for. The button is worded for what it does —
+          // taking back today's confirmation — and the line above it says which
+          // confirmation, since that is the part that is not obvious.
           dismissedThisShift
             ? h(
                 'div',
-                { className: 'dsh-offwork-row' },
-                h('span', { className: 'dsh-offwork-rowLabel' }, t('act.known')),
+                { className: 'dsh-offwork-field dsh-offwork-undoDismiss' },
                 h(
-                  'button',
-                  { type: 'button', className: 'dsh-offwork-link', onClick: () => write({ dismissedOn: null }) },
-                  t('panel.retry'),
+                  'div',
+                  { className: 'dsh-offwork-row' },
+                  h('span', { className: 'dsh-offwork-rowLabel' }, t('panel.dismissedLabel')),
+                  h(
+                    'button',
+                    { type: 'button', className: 'dsh-offwork-link', onClick: () => write({ dismissedOn: null }) },
+                    t('panel.undoDismiss'),
+                  ),
                 ),
+                h('div', { className: 'dsh-offwork-hint' }, t('panel.dismissedHint')),
               )
             : null,
 
@@ -2162,6 +2220,9 @@ window.__ModuleLoader__.load({
 .dsh-offwork-field{display:flex;flex-direction:column;gap:6px}
 .dsh-offwork-rowLabel{color:var(--dsw-alias-label-secondary)}
 .dsh-offwork-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary)}
+/* The undo row is a flag plus a sentence; the sentence has to sit under the
+   row it explains, not beside the label, so the pair reads as one block. */
+.dsh-offwork-undoDismiss{gap:4px}
 .dsh-offwork-input{min-width:132px;padding:6px 8px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;color-scheme:light dark}
 .dsh-offwork-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 /* A time field is a button as much as a text box: clicking anywhere in it opens
