@@ -4,7 +4,7 @@ The pill walks a workday with you:
 | --- | --- |
 | Shift started | "09:00" with a **Clock in** button |
 | Counting down | "Ends 18:00" and the time left |
-| Nearly done | The countdown switches to a warning colour |
+| Nearly done | Border and background take the reminder colour, at a lighter strength |
 | Time to leave | The card fills with colour, breathes and shakes, with a **Got it** button |
 | Off the clock | The next shift, such as "Starts tomorrow at 09:00" |
 

@@ -14,7 +14,8 @@
  *              The pill shows the start time and a 「打卡」 button, which is
  *              itself the reminder to clock in.
  *   working  — clocked in, before the heads-up window; quiet, theme-token colours
- *   soon     — inside the heads-up window (default 15 min); warn accent
+ *   soon     — inside the heads-up window (default 15 min); the accent tinted
+ *              into the card at low strength, same colour as `due` below
  *   due      — the shift has ended; the accent colour fills the card and the pill
  *              breathes. Shown whether or not the day was clocked in: forgetting
  *              to clock in must not cost the user the reminder that matters most.
@@ -2060,10 +2061,20 @@ window.__ModuleLoader__.load({
 .dsh-offwork-waiting .dsh-offwork-action{background:var(--dsw-alias-state-warn-primary);color:#27241f;font-weight:600}
 .dsh-offwork-waiting .dsh-offwork-action:hover{filter:brightness(1.06)}
 
-/* ---- soon: the heads-up window, warn accent ----------------------------- */
-.dsh-offwork-soon{border-color:var(--dsw-alias-state-warn-primary)}
-.dsh-offwork-soon .dsh-offwork-dot{background:var(--dsw-alias-state-warn-primary)}
-.dsh-offwork-soon .dsh-offwork-clock{color:var(--dsw-alias-state-warn-primary);font-weight:600}
+/* ---- soon: the heads-up window, the accent at low strength -------------- */
+/* The heads-up state belongs to the same ramp as "due", so it carries the same
+   accent — just far weaker: the card takes a 30% tint of it and the countdown
+   stays in label-primary. Two reasons it is not the accent as text:
+   on the pill surface (bg-overlay) a saturated accent is only 1.02-4.82:1, and
+   in the dark theme that surface is the mid grey #61666b, where a raw accent
+   drops to ~1.1:1 and simply cannot carry 12px type. Tinting the CARD instead
+   keeps the accent visible without putting legible text at risk.
+   Mixing into bg-base (not bg-overlay) is what makes one rule serve both
+   themes: the tint lands pale on a white page and deep on a near-black one,
+   which is the direction each theme needs. */
+.dsh-offwork-soon{border-color:var(--dsh-offwork-accent);background:color-mix(in srgb, var(--dsh-offwork-accent) 30%, var(--dsw-alias-bg-base, var(--dsw-alias-bg-overlay, #ffffff)))}
+.dsh-offwork-soon .dsh-offwork-dot{background:var(--dsh-offwork-accent)}
+.dsh-offwork-soon .dsh-offwork-clock{color:var(--dsw-alias-label-primary);font-weight:600}
 
 /* ---- due: the accent fills the card, and the pill breathes -------------- */
 .dsh-offwork-due{border-color:var(--dsh-offwork-accent);background:var(--dsh-offwork-accent);color:var(--dsh-offwork-ink);box-shadow:0 6px 24px color-mix(in srgb, var(--dsh-offwork-accent) 55%, transparent);animation:dsh-offwork-breathe var(--dsh-offwork-pulse, 1.8s) ease-in-out infinite}

@@ -4,7 +4,7 @@
 
 [中文](README.md) | **English**
 
-A small pill in the corner of the interface that walks a workday with you: it prompts you to clock in when your shift starts, counts down quietly, turns amber as the end approaches, and fills with colour, breathes and shakes when it is time to leave.
+A small pill in the corner of the interface that walks a workday with you: it prompts you to clock in when your shift starts, counts down quietly, takes your reminder colour as the end approaches, and fills with it, breathes and shakes when it is time to leave.
 
 | Clock in | Countdown |
 | :---: | :---: |
@@ -23,7 +23,7 @@ A small pill in the corner of the interface that walks a workday with you: it pr
 - **Clock in** — at your shift's start time the pill shows a "Clock in" button, which is itself the reminder to do it. One click covers the whole day; a refresh or restart remembers it. Changing the shift's times makes it a different shift, so it asks again — and the settings card says so the moment you do it.
   - The button names the **action** (Clock in), not the state (Clocked in) — it is asking you to press it, not reporting.
 - **Countdown** — after clocking in it counts down quietly in the corner.
-- **Heads-up** — inside the lead window (15 minutes by default) the border and the countdown switch to a warning colour.
+- **Heads-up** — inside the lead window (15 minutes by default) the border and the background take your reminder colour at a lighter strength; it only goes full when the time comes.
 - **Clock-out reminder** — the whole card fills with your accent colour, breathes and shakes, and a "Got it" button dismisses it for the day.
   - Shown whether or not you clocked in: forgetting to clock in must not cost you the one reminder that matters most.
 - **Reminder window** — the reminder lasts a bounded time (4 hours by default), then goes quiet, so an 18:00 finish does not nag you at midnight.
