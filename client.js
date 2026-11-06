@@ -118,6 +118,8 @@ window.__ModuleLoader__.load({
         'act.known': '知道了',
         'panel.title': '打卡提醒',
         'panel.subtitle': '到点后浮窗会变色并轻轻呼吸，提醒你打卡。',
+        'panel.settingsHead': '设置',
+        'panel.settingsHint': '改完立即生效，不需要保存。',
         'panel.sectionTime': '班次时间',
         'panel.startTime': '上班时间',
         'panel.endTime': '下班时间',
@@ -198,6 +200,8 @@ window.__ModuleLoader__.load({
         'act.known': 'Got it',
         'panel.title': 'Clock reminder',
         'panel.subtitle': 'When the time comes the pill fills with colour and breathes, so you do not forget to clock out.',
+        'panel.settingsHead': 'Settings',
+        'panel.settingsHint': 'Changes apply at once; there is nothing to save.',
         'panel.sectionTime': 'Shift',
         'panel.startTime': 'Starts',
         'panel.endTime': 'Ends',
@@ -1888,15 +1892,21 @@ window.__ModuleLoader__.load({
         h(Styles),
         h(
           'section',
-          { className: 'dsh-offwork-section', 'aria-label': t('panel.title') },
+          { className: 'dsh-offwork-section', 'aria-label': t('panel.settingsHead') },
+          // A heading that names the thing, not its behaviour. This card sits
+          // directly under the page's long description, which is a column of
+          // prose ending in a table; a card that opens with a descriptive
+          // sentence is read as one more paragraph of it. 「设置」 plus the gear
+          // the pill itself uses for this form is what says "controls".
           h(
             'div',
-            { className: 'dsh-offwork-head' },
+            { className: 'dsh-offwork-sectionHead' },
+            h('span', { className: 'dsh-offwork-sectionIcon', 'aria-hidden': true }, '⚙'),
             h(
               'div',
-              { className: 'dsh-offwork-headText' },
-              h('div', { className: 'dsh-offwork-title' }, t('panel.title')),
-              h('div', { className: 'dsh-offwork-subtitle' }, t('panel.subtitle')),
+              { className: 'dsh-offwork-sectionText' },
+              h('h4', { className: 'dsh-offwork-sectionTitle' }, t('panel.settingsHead')),
+              h('p', { className: 'dsh-offwork-sectionHint' }, t('panel.settingsHint')),
             ),
           ),
           h(SettingsForm),
@@ -2007,10 +2017,19 @@ window.__ModuleLoader__.load({
 @media (prefers-reduced-motion:reduce){.dsh-offwork-due{animation:none}.dsh-offwork-due .dsh-offwork-dot{animation:none}.dsh-offwork-shake{animation:none}}
 
 /* ---- the settings panel ------------------------------------------------- */
-/* On the plugin's detail page the form is normal page content, not a floating
-   card: no absolute box, no own surface — the page already provides both. */
-.dsh-offwork-section{display:flex;flex-direction:column;gap:9px;margin-top:14px;padding:16px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);font-size:13px;line-height:19px;color:var(--dsw-alias-label-primary)}
-.dsh-offwork-section .dsh-offwork-head{margin-bottom:2px}
+/* On the plugin's detail page the form is a card of its own, and it has to
+   LOOK like one: bg-layer-1 is #fff in the light theme, the same white the page
+   paints, and border-l1 is 4% black — 1.09:1 against that white. A card drawn
+   with those two tokens is invisible, so the form read as another paragraph of
+   the description above it rather than as a set of controls.
+   settings-card-stroke (16% black) and bg-layer-3 are the tokens the shipped
+   settings cards use for exactly this, so the box matches theirs. */
+.dsh-offwork-section{display:flex;flex-direction:column;gap:10px;margin-top:18px;padding:16px 18px 18px;border:1px solid var(--dsw-alias-settings-card-stroke,var(--dsw-alias-border-l4,#00000029));border-radius:var(--dsw-radius-lg,16px);background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-layer-1));font-size:13px;line-height:19px;color:var(--dsw-alias-label-primary)}
+.dsh-offwork-sectionHead{display:flex;align-items:flex-start;gap:9px;margin-bottom:2px;padding-bottom:10px;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.dsh-offwork-sectionIcon{flex:none;font-size:15px;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.dsh-offwork-sectionText{min-width:0}
+.dsh-offwork-sectionTitle{margin:0;font-size:14px;font-weight:600;line-height:20px}
+.dsh-offwork-sectionHint{margin:2px 0 0;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}
 
 .dsh-offwork-catcher{position:absolute;inset:0;z-index:31;pointer-events:auto}
 /* Visually hidden, still announced: the phase label is the only text a screen
