@@ -1563,6 +1563,40 @@ window.__ModuleLoader__.load({
         [schedule.workdays, write],
       )
 
+      /**
+       * Open the native picker for a time field.
+       *
+       * `showPicker()` is the standard way and needs a user gesture, which a
+       * click handler is. Without this the picker only opens from the small
+       * clock icon at the field's right edge — roughly the last 20px of a
+       * 132px-wide control — and a click anywhere else merely puts a caret in
+       * a time segment, which does not look like "open the picker".
+       *
+       * Only clicks LEFT of the icon's strip are handled here. A click on the
+       * indicator opens the picker by itself; calling showPicker() for it would
+       * race the browser's own toggle and could close what just opened, so that
+       * region is left exactly as it always behaved. The method may also be
+       * missing (older engines) or refuse outside a gesture — keyboard entry
+       * stays available either way.
+       * @param {object} event - the click event on the input.
+       */
+      const openTimePicker = useCallback((event) => {
+        const input = event.currentTarget
+        if (typeof input.showPicker !== 'function') return
+        // Measured from clientX, not offsetX: a click on the indicator pseudo-
+        // element reports an offsetX relative to THAT box, not to the input, so
+        // an offsetX test silently reads as "clicked the left edge" and the
+        // guard never fires exactly when it is needed.
+        const box = input.getBoundingClientRect()
+        if (box.width > 0 && event.clientX - box.left > box.width - 28) return
+        try {
+          input.showPicker()
+        } catch {
+          // NotAllowedError (no gesture) or InvalidStateError (already open):
+          // the field still accepts keyboard entry, so there is nothing to fix.
+        }
+      }, [])
+
       const setTime = useCallback(
         (field, value) => {
           // `<input type="time">` emits '' while a field is half-typed; writing
@@ -1624,6 +1658,7 @@ window.__ModuleLoader__.load({
               type: 'time',
               className: 'dsh-offwork-input',
               value: schedule.startTime,
+              onClick: openTimePicker,
               onChange: (event) => setTime('startTime', event.target.value),
             }),
           ),
@@ -1635,6 +1670,7 @@ window.__ModuleLoader__.load({
               type: 'time',
               className: 'dsh-offwork-input',
               value: schedule.endTime,
+              onClick: openTimePicker,
               onChange: (event) => setTime('endTime', event.target.value),
             }),
           ),
@@ -2128,6 +2164,13 @@ window.__ModuleLoader__.load({
 .dsh-offwork-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary)}
 .dsh-offwork-input{min-width:132px;padding:6px 8px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;color-scheme:light dark}
 .dsh-offwork-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+/* A time field is a button as much as a text box: clicking anywhere in it opens
+   the native picker (see openTimePicker). The UA gives it cursor:default, which
+   reads as "static text", so the hand is set here. Hovering brightens the edge
+   for the same reason a button does — to say the whole box is the target, not
+   just the clock glyph at its right edge. */
+.dsh-offwork-input[type="time"]{cursor:pointer}
+.dsh-offwork-input[type="time"]:hover{border-color:var(--dsw-alias-border-l2)}
 
 .dsh-offwork-days{display:flex;gap:4px}
 .dsh-offwork-day{flex:1;padding:6px 0;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:none;font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer}
