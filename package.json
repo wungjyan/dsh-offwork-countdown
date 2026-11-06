@@ -1,6 +1,6 @@
 {
   "name": "dsh-offwork-countdown",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A floating workday companion for the DeepSeek Harness Web UI: clock in, count down, get reminded when it is time to clock out. / 悬浮在界面角落的工作日流程挂件：上班打卡、下班倒计时、到点变色呼吸提醒。",
   "type": "module",
   "license": "MIT",
