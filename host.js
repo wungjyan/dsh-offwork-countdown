@@ -163,8 +163,16 @@ export function apply(ctx) {
  * @param {import('node:http').ServerResponse} response - the response.
  */
 async function serveState(ctx, request, response) {
+  // A repaired value is otherwise invisible: the request succeeds, the page
+  // draws the default, and nothing says why. One warning line per read is
+  // enough to diagnose it from the Host log.
+  const reportRepair = (fields) => {
+    ctx.logger?.warn?.(
+      `[dsh-offwork-countdown] ${stateFile()} held values this build cannot use; ${fields.join(', ')} fell back to the defaults, everything else was kept`,
+    )
+  }
   if (request.method === 'GET') {
-    const current = await readState()
+    const current = await readState(reportRepair)
     send(response, 200, { ok: true, state: current })
     return
   }
@@ -182,7 +190,7 @@ async function serveState(ctx, request, response) {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
     throw new StateRefusal(400, 'invalid-shape', 'request body must be a JSON object')
   }
-  const current = await readState()
+  const current = await readState(reportRepair)
   const next = mergeState(current, patch)
   await writeState(next)
   ctx.logger?.info?.(`[dsh-offwork-countdown] settings saved: ${describeState(next)}`)
@@ -190,12 +198,16 @@ async function serveState(ctx, request, response) {
 }
 
 /**
- * Read the stored settings, falling back to the defaults when the file is
- * missing, unreadable or no longer valid. A broken file must never stop the
- * widget from rendering: the user can always save again from the panel.
+ * Read the stored settings.
+ *
+ * Missing, unreadable and unparseable files fall back to the defaults; nothing
+ * else can be salvaged from them. A file that parses but holds a value this
+ * build refuses is repaired group by group instead — see `repairState` for why
+ * the whole document must not be discarded.
+ * @param {(fields: string[]) => void} [onRepair] - told which fields fell back.
  * @returns {Promise<object>} a complete, validated settings document.
  */
-async function readState() {
+async function readState(onRepair) {
   let raw
   try {
     raw = await readFile(stateFile(), 'utf8')
@@ -208,11 +220,76 @@ async function readState() {
   } catch {
     return structuredClone(DEFAULTS)
   }
+  // A document is an object; `null`, an array or a scalar carries no field to
+  // salvage, so it is treated exactly like a file that failed to parse.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return structuredClone(DEFAULTS)
+  }
   try {
     return mergeState(DEFAULTS, parsed)
   } catch {
-    return structuredClone(DEFAULTS)
+    // The file parsed but held at least one value this build refuses. Falling
+    // back wholesale here would throw away settings that are perfectly good —
+    // and the next write would then persist the defaults over them, making the
+    // loss permanent. Salvage what still validates instead.
+    return repairState(parsed, onRepair)
   }
+}
+
+/**
+ * The fields that are kept or discarded together.
+ *
+ * A group is the unit because its fields only mean anything as a set: a start
+ * time without its end time describes no shift, and keeping half the old pair
+ * would invent a shift the user never chose. Everything else stands alone, so
+ * one unreadable value costs exactly one setting.
+ */
+const REPAIR_GROUPS = [
+  ['startTime', 'endTime'],
+  ['leadMinutes'],
+  ['workdays'],
+  ['enabled'],
+  ['position'],
+  ['spot'],
+  ['clockedInOn'],
+  ['dismissedOn'],
+  ['accentColor'],
+  ['pulseSeconds'],
+  ['remindWindowMinutes'],
+]
+
+/**
+ * Rebuild a usable document from one that failed validation.
+ *
+ * Each group is merged onto the defaults through the same `mergeState` a write
+ * goes through, so a salvaged document is exactly as valid as a written one:
+ * the next read accepts it without repairing again, and the result does not
+ * depend on how many times it is read.
+ *
+ * This repairs VALUES, not their meaning. A mark in an older format is still
+ * returned as it was found — deciding it no longer matches a shift stays the
+ * Client's job, so upgrading never silently rewrites what the user recorded.
+ * @param {object} stored - the parsed file, known to fail validation.
+ * @param {(fields: string[]) => void} [onRepair] - told which fields fell back.
+ * @returns {object} a complete, validated settings document.
+ */
+function repairState(stored, onRepair) {
+  let state = structuredClone(DEFAULTS)
+  const dropped = []
+  for (const group of REPAIR_GROUPS) {
+    const patch = {}
+    for (const key of group) {
+      if (stored[key] !== undefined) patch[key] = stored[key]
+    }
+    if (Object.keys(patch).length === 0) continue
+    try {
+      state = mergeState(state, patch)
+    } catch {
+      dropped.push(...group)
+    }
+  }
+  if (dropped.length > 0 && typeof onRepair === 'function') onRepair(dropped)
+  return state
 }
 
 /**
