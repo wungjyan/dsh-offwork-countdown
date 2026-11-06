@@ -152,6 +152,7 @@ window.__ModuleLoader__.load({
         'panel.daysRequired': '至少保留一天。',
         'panel.shiftInvalid': '上班和下班时间不能相同。',
         'panel.clockInHint': '每天点一次「打卡」，浮窗才开始显示下班倒计时。',
+        'panel.shiftResetsMark': '改时间等于换了一个班次，今天要重新打卡。',
         'day.1': '一',
         'day.2': '二',
         'day.3': '三',
@@ -234,6 +235,7 @@ window.__ModuleLoader__.load({
         'panel.daysRequired': 'Keep at least one day.',
         'panel.shiftInvalid': 'Start and end times must differ.',
         'panel.clockInHint': 'Clock in once a day and the pill starts counting down to the end of your shift.',
+        'panel.shiftResetsMark': 'Changing the times makes it a different shift, so today needs a new clock-in.',
         'day.1': 'M',
         'day.2': 'T',
         'day.3': 'W',
@@ -664,6 +666,52 @@ window.__ModuleLoader__.load({
       // Outside every shift: the pill still has something true to say — when the
       // next shift starts. This is an idle state, not an absent one.
       return idleFor(schedule, now)
+    }
+
+    /**
+     * Whether editing the shift's times has left today's clock-in stranded.
+     *
+     * A mark is `date|start|end`, so moving either time makes it a different
+     * shift and the old mark stops matching — the user has to clock in again.
+     * That is deliberate (see `markMatches`), but it is invisible: the form
+     * writes, nothing errors, and the pill quietly reverts to 「打卡」. This is
+     * what lets the page say so at the moment it happens.
+     *
+     * "Stranded" is deliberately narrow:
+     *
+     *   - The mark has to name the SAME day as the shift in view. A mark from an
+     *     earlier day is the ordinary start of a new working day, not a loss, and
+     *     warning there would fire every single morning.
+     *   - The shift must not be over. Changing the times at 19:00 after an 18:00
+     *     finish strands the mark too, but there is nothing left to clock into,
+     *     so saying "clock in again today" would be false advice.
+     *   - A shift that has not started yet still counts: at 10:00, moving the
+     *     shift to 14:00 strands the mark just as surely, and the user would
+     *     otherwise only discover it at 14:00.
+     * @param {object} schedule - the settings document.
+     * @param {Date} now - the current instant.
+     * @returns {boolean} true when a same-day clock-in no longer applies.
+     */
+    function clockInLostByEdit(schedule, now) {
+      if (schedule.clockedInOn === null) return false
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
+      const shifts = []
+      // Yesterday covers a night shift still running this morning; today covers
+      // both a shift in progress and one that has yet to start.
+      for (const offset of [-1, 0]) {
+        const day = new Date(today)
+        day.setDate(day.getDate() + offset)
+        const shift = buildShift(day, schedule.startTime, schedule.endTime)
+        if (isScheduledShift(shift, schedule.workdays)) shifts.push(shift)
+      }
+      const running = shifts.find((shift) => now >= shift.start && now < shift.end)
+      const later = shifts.find((shift) => shift.key === localDateKey(today) && shift.start > now)
+      const current = running ?? later
+      if (current === undefined || now >= current.end) return false
+      if (markMatches(schedule.clockedInOn, current)) return false
+      // The date a print belongs to is its first field; a bare-date mark left by
+      // an older version has been dropped to null long before this runs.
+      return schedule.clockedInOn.split('|')[0] === current.key
     }
 
     /**
@@ -1539,6 +1587,13 @@ window.__ModuleLoader__.load({
       const dismissedThisShift = schedule.dismissedOn !== null
       const overnight = minutesOf(schedule.startTime) >= minutesOf(schedule.endTime)
       const customActive = ACCENTS[schedule.accentColor] === undefined
+      // Editing either time is what drops the mark, so the warning belongs
+      // beside those two fields rather than in a footnote at the bottom. The
+      // pill does not run at all while it is switched off, so a stranded mark is
+      // moot there and saying so would only be noise.
+      const markLost = schedule.enabled
+        ? clockInLostByEdit(schedule, new Date())
+        : false
 
       return h(
         React.Fragment,
@@ -1583,6 +1638,17 @@ window.__ModuleLoader__.load({
             }),
           ),
           overnight ? h('div', { className: 'dsh-offwork-note' }, t('panel.overnight')) : null,
+          // Only when a same-day clock-in was just invalidated. Shown on every
+          // edit to these two fields, it would be the same sentence a reader
+          // learns to skip; shown at the moment it becomes true, it explains a
+          // change the pill is about to make behind their back.
+          markLost
+            ? h(
+                'div',
+                { className: 'dsh-offwork-note dsh-offwork-warnShift', role: 'status' },
+                t('panel.shiftResetsMark'),
+              )
+            : null,
 
           // ---- reminders ----
           h('div', { className: 'dsh-offwork-group' }, t('panel.sectionWarn')),
@@ -2072,6 +2138,11 @@ window.__ModuleLoader__.load({
 .dsh-offwork-check{width:16px;height:16px;margin:0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
 .dsh-offwork-note{padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px}
 .dsh-offwork-bad{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 14%,transparent);color:var(--dsw-alias-label-primary)}
+/* The same amber the pill itself uses for 「快下班了」, so a warning reads the
+   same way everywhere in this plugin. Label stays primary: amber-500 is 2.2:1
+   against white, which is fine for a fill or a border and far too thin for the
+   sentence inside it. */
+.dsh-offwork-warnShift{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 14%,transparent);box-shadow:inset 2px 0 0 var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-label-primary)}
 .dsh-offwork-link{padding:0;border:0;background:none;font:inherit;color:var(--dsw-alias-brand-primary);cursor:pointer;text-decoration:underline}
 .dsh-offwork-foot{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary)}
 `
