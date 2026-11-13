@@ -2122,6 +2122,19 @@ window.__ModuleLoader__.load({
 /* Grab affordances: the pill is draggable, so the cursor says so and a drag in
    progress drops the transition that would otherwise lag behind the pointer. */
 .dsh-offwork-pill{cursor:grab;touch-action:none;user-select:none}
+
+/* The desktop shell makes the conversation header, and the sidebar's top strip,
+   native window-drag regions ([data-window-drag]; one darwin rule in the host
+   stylesheet). A drag region is a geometric rectangle that swallows every
+   pointer event inside it — z-index and pointer-events never enter into it — so
+   a pill sitting over the header moved the whole window on press and took
+   neither the drag nor the click. Claiming no-drag punches the pill back out:
+   Electron folds the reported rects in document order, and the overlay layer
+   hosting this slot comes after the header, so this difference lands on top of
+   the header's drag. Only the native window drag is affected; the pill's own
+   pointer-drag is ours and keeps working. The panel is listed alongside only for
+   symmetry — its role="dialog" already earns the host's blanket opt-out. */
+.dsh-offwork-pill,.dsh-offwork-panel{-webkit-app-region:no-drag;app-region:no-drag}
 .dsh-offwork-grabbing{cursor:grabbing;transition:none;box-shadow:0 10px 30px rgba(0,0,0,.28);z-index:33}
 .dsh-offwork-grabbing *{cursor:grabbing}
 /* While dragging, buttons inside must not swallow the gesture. */
